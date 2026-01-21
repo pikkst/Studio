@@ -1,0 +1,8 @@
+{
+  "name": "Lumina AI Video Studio",
+  "description": "A high-end, AI-powered video editing platform that leverages Gemini to transform ideas into professional cinematic content.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
