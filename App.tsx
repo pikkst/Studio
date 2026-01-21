@@ -949,21 +949,10 @@ const App: React.FC = () => {
         setMessages(prev => [...prev, { role: 'ai', text: response || "" }]);
       } else if (aiMode === AIServiceMode.IMAGE_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "🎨 Generating image..." }]);
-        try {
-          const url = await geminiService.generateImage(prompt, userGeminiKey);
-          const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
-          setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
-          setMessages(prev => [...prev, { role: 'ai', text: "✅ Image generated! Added to your library." }]);
-        } catch (imgError: any) {
-          // Show detailed error for image generation
-          setMessages(prev => [...prev, { role: 'ai', text: `❌ ${imgError.message}` }]);
-          
-          // If rate limit, show countdown
-          if (imgError.message?.includes('rate') || imgError.message?.includes('quota')) {
-            setToast({ message: '⏳ Rate limit - wait 60s before next image', type: 'warning' });
-          }
-          throw imgError; // Re-throw to trigger outer catch
-        }
+        const url = await geminiService.generateImage(prompt, userGeminiKey);
+        const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
+        setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+        setMessages(prev => [...prev, { role: 'ai', text: "✅ Image generated! Added to your library." }]);
       } else if (aiMode === AIServiceMode.SPEECH_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating speech..." }]);
         const url = await geminiService.generateNarration(prompt, userGeminiKey);
@@ -977,8 +966,15 @@ const App: React.FC = () => {
         setMessages(prev => [...prev, { role: 'ai', text: result.text, links: result.links }]);
       }
     } catch (e) {
-      setMessages(prev => [...prev, { role: 'ai', text: `Error: ${(e as Error).message}` }]);
-      setToast({ message: `AI Error: ${(e as Error).message}`, type: 'error' });
+      const errorMsg = (e as Error).message;
+      setMessages(prev => [...prev, { role: 'ai', text: `❌ Error: ${errorMsg}` }]);
+      
+      // Show specific toast for rate limits
+      if (errorMsg.includes('rate') || errorMsg.includes('quota')) {
+        setToast({ message: '⏳ Rate limit - wait 60s before next image', type: 'warning' });
+      } else {
+        setToast({ message: `AI Error: ${errorMsg}`, type: 'error' });
+      }
     } finally { 
       setIsAiLoading(false); 
     }
