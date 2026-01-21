@@ -584,40 +584,63 @@ const App: React.FC = () => {
   }
 
   useEffect(() => {
+    let animationFrameId: number | null = null;
+    let currentMouseX = 0;
+    
     const handleMouseMove = (e: MouseEvent) => {
-      if (isDraggingPlayhead) updatePlayheadPosition(e);
-      if (resizingItem) {
-        const deltaX = (e.clientX - resizingItem.initialX) / PIXELS_PER_SECOND;
-        setProject(prev => ({
-          ...prev,
-          timeline: prev.timeline.map(track => ({
-            ...track,
-            items: track.items.map(i => {
-              if (i.id !== resizingItem.itemId) return i;
-              if (resizingItem.side === 'start') {
-                const newStart = Math.max(0, resizingItem.initialStart + deltaX);
-                const newDur = Math.max(0.1, resizingItem.initialDuration - (newStart - resizingItem.initialStart));
-                return { ...i, startTime: newStart, duration: newDur };
-              } else {
-                const newDur = Math.max(0.1, resizingItem.initialDuration + deltaX);
-                return { ...i, duration: newDur };
-              }
-            })
-          }))
-        }));
+      currentMouseX = e.clientX;
+      
+      if (isDraggingPlayhead) {
+        updatePlayheadPosition(e);
+      }
+      
+      if (resizingItem && !animationFrameId) {
+        animationFrameId = requestAnimationFrame(() => {
+          const deltaX = (currentMouseX - resizingItem.initialX) / PIXELS_PER_SECOND;
+          
+          setProject(prev => ({
+            ...prev,
+            timeline: prev.timeline.map(track => ({
+              ...track,
+              items: track.items.map(i => {
+                if (i.id !== resizingItem.itemId) return i;
+                if (resizingItem.side === 'start') {
+                  const newStart = Math.max(0, resizingItem.initialStart + deltaX);
+                  const newDur = Math.max(0.1, resizingItem.initialDuration - (newStart - resizingItem.initialStart));
+                  return { ...i, startTime: newStart, duration: newDur };
+                } else {
+                  const newDur = Math.max(0.1, resizingItem.initialDuration + deltaX);
+                  return { ...i, duration: newDur };
+                }
+              })
+            }))
+          }));
+          
+          animationFrameId = null;
+        });
       }
     };
+    
     const handleMouseUp = () => {
       setIsDraggingPlayhead(false);
       setResizingItem(null);
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
     };
+    
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
-  }, [isDraggingPlayhead, resizingItem]);
+  }, [isDraggingPlayhead, resizingItem, PIXELS_PER_SECOND]);
 
   const processFiles = async (files: FileList) => {
     if (!user) return;
@@ -1021,8 +1044,9 @@ const App: React.FC = () => {
                   {track.items.map(item => {
                     const asset = project.assets.find(a => a.id === item.assetId);
                     const isSelected = selectedItemId === item.id;
+                    const isResizing = resizingItem?.itemId === item.id;
                     return (
-                      <div key={item.id} onClick={(e) => {e.stopPropagation(); setSelectedItemId(item.id);}} draggable onDragStart={e => {setDraggingItem({itemId:item.id, trackId:track.id}); e.dataTransfer.setData('type', 'timeline-item');}} style={{ left: `${item.startTime * PIXELS_PER_SECOND}px`, width: `${item.duration * PIXELS_PER_SECOND}px` }} className={`absolute top-2 bottom-2 rounded border shadow-xl flex flex-col justify-center px-2 overflow-hidden transition-all group/item cursor-grab active:cursor-grabbing ${isSelected ? 'ring-2 ring-violet-500 border-violet-400 z-40 bg-opacity-40' : 'border-zinc-700'} ${track.type === 'audio' ? 'bg-indigo-600/20' : track.type === 'text' ? 'bg-amber-600/20' : 'bg-violet-600/20'}`}>
+                      <div key={item.id} onClick={(e) => {e.stopPropagation(); setSelectedItemId(item.id);}} draggable onDragStart={e => {setDraggingItem({itemId:item.id, trackId:track.id}); e.dataTransfer.setData('type', 'timeline-item');}} style={{ left: `${item.startTime * PIXELS_PER_SECOND}px`, width: `${item.duration * PIXELS_PER_SECOND}px` }} className={`absolute top-2 bottom-2 rounded border shadow-xl flex flex-col justify-center px-2 overflow-hidden transition-none group/item ${isResizing ? 'cursor-ew-resize' : 'cursor-grab active:cursor-grabbing'} ${isSelected ? 'ring-2 ring-violet-500 border-violet-400 z-40 bg-opacity-40' : 'border-zinc-700'} ${isResizing ? 'ring-2 ring-blue-500' : ''} ${track.type === 'audio' ? 'bg-indigo-600/20' : track.type === 'text' ? 'bg-amber-600/20' : 'bg-violet-600/20'}`}>
                         {asset?.type === 'audio' && <AudioWaveform url={asset.url} color="#818cf8" />}
                         <div onMouseDown={(e) => handleResizeStart(e, item, 'start')} className="resize-handle absolute left-0 top-0 bottom-0 w-1.5 bg-white/20 hover:bg-violet-500 cursor-ew-resize opacity-0 group-hover/item:opacity-100 z-50 transition-all" />
                         <div onMouseDown={(e) => handleResizeStart(e, item, 'end')} className="resize-handle absolute right-0 top-0 bottom-0 w-1.5 bg-white/20 hover:bg-violet-500 cursor-ew-resize opacity-0 group-hover/item:opacity-100 z-50 transition-all" />
