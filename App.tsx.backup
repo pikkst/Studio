@@ -1,0 +1,444 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music,
+  Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink,
+  ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock,
+  Save, FolderOpen, LogOut
+} from 'lucide-react';
+import { Asset, ProjectState, AIServiceMode, TimelineItem } from './types';
+import { geminiService } from './services/geminiService';
+import { supabaseService } from './services/supabaseService';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { AuthScreen } from './components/AuthScreen';
+import { AudioWaveform } from './components/AudioWaveform';
+
+const App: React.FC = () => {
+  const [user, setUser] = useState<SupabaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [project, setProject] = useState<ProjectState>({
+    id: Math.random().toString(36).substr(2, 9),
+    title: 'New Project',
+    assets: [],
+    timeline: [
+      { id: 'v1', name: 'Video 1', type: 'video', volume: 1, items: [] },
+      { id: 'v2', name: 'Video 2', type: 'video', volume: 1, items: [] },
+      { id: 'a1', name: 'Background', type: 'audio', volume: 0.5, items: [] },
+      { id: 'a2', name: 'Voiceover', type: 'audio', volume: 1, items: [] }
+    ]
+  });
+
+  const [activeTab, setActiveTab] = useState<'media' | 'search'>('media');
+  const [aiMode, setAiMode] = useState<AIServiceMode>(AIServiceMode.CHAT);
+  const [aiInput, setAiInput] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isAiOpen, setIsAiOpen] = useState(true);
+  const [messages, setMessages] = useState<{role: 'user' | 'ai', text: string, links?: {title: string, uri: string}[]}[]>([]);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
+  const [draggingItem, setDraggingItem] = useState<{itemId: string, trackId: string} | null>(null);
+  const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
+  const [resizingItem, setResizingItem] = useState<{itemId: string, side: 'start' | 'end', initialX: number, initialStart: number, initialDuration: number} | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const timelineContentRef = useRef<HTMLDivElement>(null);
+  const rulerScrollRef = useRef<HTMLDivElement>(null);
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const playheadIntervalRef = useRef<number | null>(null);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const PIXELS_PER_SECOND = 30;
+  const HEADER_WIDTH = 160;
+
+  useEffect(() => {
+    const initAuth = async () => {
+      const currentUser = await supabaseService.getCurrentUser();
+      setUser(currentUser);
+      setAuthLoading(false);
+    };
+    initAuth();
+    const { data: { subscription } } = supabaseService.onAuthStateChange((user) => {
+      setUser(user);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleSignOut = async () => {
+    await supabaseService.signOut();
+    setUser(null);
+  };
+
+  const handleSaveProject = async () => {
+    if (!user) return;
+    setIsSaving(true);
+    setSaveStatus('saving');
+    try {
+      await supabaseService.saveProject(project, user.id);
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+    } catch (error) {
+      console.error('Save failed:', error);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => handleSaveProject(), 30000);
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [project, user]);
+
+  const handleLoadProjects = async () => {
+    if (!user) return;
+    try {
+      const projects = await supabaseService.loadProjects(user.id);
+      if (projects.length > 0) setProject(projects[0].data);
+    } catch (error) {
+      console.error('Load failed:', error);
+    }
+  };
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (timelineContentRef.current && rulerScrollRef.current) {
+        rulerScrollRef.current.scrollLeft = timelineContentRef.current.scrollLeft;
+      }
+    };
+    const content = timelineContentRef.current;
+    content?.addEventListener('scroll', handleScroll);
+    return () => content?.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  useEffect(() => {
+    const audioItems = project.timeline.flatMap(t => t.items).filter(item => {
+      const asset = project.assets.find(a => a.id === item.assetId);
+      return asset?.type === 'audio';
+    });
+    const itemIds = new Set(audioItems.map(i => i.id));
+    for (const id of audioElementsRef.current.keys()) {
+      if (!itemIds.has(id)) {
+        const audio = audioElementsRef.current.get(id);
+        if (audio) {
+          audio.pause();
+          audio.src = "";
+          audio.load();
+        }
+        audioElementsRef.current.delete(id);
+      }
+    }
+    audioItems.forEach(item => {
+      if (!audioElementsRef.current.has(item.id)) {
+        const asset = project.assets.find(a => a.id === item.assetId);
+        if (asset) {
+          const audio = new Audio(asset.url);
+          audio.preload = "auto";
+          audio.onwaiting = () => setIsBuffering(true);
+          audio.oncanplay = () => setIsBuffering(false);
+          audioElementsRef.current.set(item.id, audio);
+        }
+      }
+    });
+  }, [project.timeline, project.assets]);
+
+  useEffect(() => {
+    const syncAudio = () => {
+      audioElementsRef.current.forEach((audio, itemId) => {
+        let item: TimelineItem | undefined;
+        let parentTrack;
+        for (const track of project.timeline) {
+          item = track.items.find(i => i.id === itemId);
+          if (item) {
+            parentTrack = track;
+            break;
+          }
+        }
+        if (!item || !parentTrack) return;
+        const isInside = currentTime >= item.startTime && currentTime < (item.startTime + item.duration);
+        audio.volume = parentTrack.volume;
+        if (isPlaying && isInside) {
+          const targetTime = currentTime - item.startTime;
+          if (Math.abs(audio.currentTime - targetTime) > 0.2) audio.currentTime = targetTime;
+          if (audio.paused) audio.play().catch(e => console.warn("Playback prevented", e));
+        } else {
+          if (!audio.paused) audio.pause();
+          const targetTimeWhenPaused = Math.max(0, currentTime - item.startTime);
+          if (Math.abs(audio.currentTime - targetTimeWhenPaused) > 0.1) audio.currentTime = targetTimeWhenPaused;
+        }
+      });
+    };
+    if (isPlaying) {
+      const startTimeRef = performance.now() - (currentTime * 1000);
+      const update = (now: number) => {
+        const elapsed = (now - startTimeRef) / 1000;
+        setCurrentTime(elapsed);
+        syncAudio();
+        playheadIntervalRef.current = requestAnimationFrame(update);
+      };
+      playheadIntervalRef.current = requestAnimationFrame(update);
+    } else {
+      if (playheadIntervalRef.current) cancelAnimationFrame(playheadIntervalRef.current);
+      syncAudio();
+    }
+    return () => {
+      if (playheadIntervalRef.current) cancelAnimationFrame(playheadIntervalRef.current);
+    };
+  }, [isPlaying, currentTime, project.timeline]);
+
+  const handleTimelineMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('.resize-handle')) return;
+    setIsDraggingPlayhead(true);
+    updatePlayheadPosition(e);
+  };
+
+  const updatePlayheadPosition = (e: React.MouseEvent | MouseEvent) => {
+    if (!timelineContentRef.current) return;
+    const rect = timelineContentRef.current.getBoundingClientRect();
+    const x = e.clientX - (rect.left + HEADER_WIDTH) + timelineContentRef.current.scrollLeft;
+    const newTime = Math.max(0, x / PIXELS_PER_SECOND);
+    setCurrentTime(newTime);
+  };
+
+  const handleResizeStart = (e: React.MouseEvent, item: TimelineItem, side: 'start' | 'end') => {
+    e.stopPropagation();
+    setResizingItem({
+      itemId: item.id,
+      side,
+      initialX: e.clientX,
+      initialStart: item.startTime,
+      initialDuration: item.duration
+    });
+  }
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDraggingPlayhead) updatePlayheadPosition(e);
+      if (resizingItem) {
+        const deltaX = (e.clientX - resizingItem.initialX) / PIXELS_PER_SECOND;
+        setProject(prev => ({
+          ...prev,
+          timeline: prev.timeline.map(track => ({
+            ...track,
+            items: track.items.map(i => {
+              if (i.id !== resizingItem.itemId) return i;
+              if (resizingItem.side === 'start') {
+                const newStart = Math.max(0, resizingItem.initialStart + deltaX);
+                const newDur = Math.max(0.1, resizingItem.initialDuration - (newStart - resizingItem.initialStart));
+                return { ...i, startTime: newStart, duration: newDur };
+              } else {
+                const newDur = Math.max(0.1, resizingItem.initialDuration + deltaX);
+                return { ...i, duration: newDur };
+              }
+            })
+          }))
+        }));
+      }
+    };
+    const handleMouseUp = () => {
+      setIsDraggingPlayhead(false);
+      setResizingItem(null);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingPlayhead, resizingItem]);
+
+  const processFiles = async (files: FileList) => {
+    if (!user) return;
+    setIsUploading(true);
+    try {
+      const uploadPromises = Array.from(files).map(async (file: File) => {
+        const storedAsset = await supabaseService.uploadMedia(file, user.id, project.id);
+        return {
+          id: storedAsset.id,
+          name: storedAsset.name,
+          type: storedAsset.type as 'video' | 'audio' | 'image',
+          url: storedAsset.url,
+          thumbnail: storedAsset.thumbnail_url,
+          duration: storedAsset.duration || undefined
+        } as Asset;
+      });
+      const newAssets = await Promise.all(uploadPromises);
+      setProject(prev => ({ ...prev, assets: [...prev.assets, ...newAssets] }));
+    } catch (err) {
+      console.error("Upload failed", err);
+      alert('Upload failed: ' + (err as Error).message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const addToTimeline = (asset: Asset, targetTrackId?: string, startTime: number = currentTime) => {
+    const resolvedTrackId = targetTrackId || project.timeline.find(t => 
+      (asset.type === 'audio' && t.type === 'audio') || 
+      (asset.type !== 'audio' && t.type === 'video')
+    )?.id || 'v1';
+    const newItemId = Math.random().toString(36).substr(2, 9);
+    const newTimelineItem: TimelineItem = {
+      id: newItemId,
+      assetId: asset.id,
+      startTime: startTime,
+      duration: asset.duration || (asset.type === 'image' ? 5 : 10),
+      layer: 0
+    };
+    setProject(prev => ({
+      ...prev,
+      timeline: prev.timeline.map(track => 
+        track.id === resolvedTrackId ? { ...track, items: [...track.items, newTimelineItem] } : track
+      )
+    }));
+    setSelectedItemId(newItemId);
+  };
+
+  const handleSplit = () => {
+    if (!selectedItemId) return;
+    setProject(prev => {
+      const newTimeline = [...prev.timeline];
+      for (const track of newTimeline) {
+        const itemIdx = track.items.findIndex(i => i.id === selectedItemId);
+        if (itemIdx !== -1) {
+          const item = track.items[itemIdx];
+          if (currentTime > item.startTime && currentTime < item.startTime + item.duration) {
+            const firstPartDuration = currentTime - item.startTime;
+            const secondPartDuration = item.duration - firstPartDuration;
+            const firstPart = { ...item, duration: firstPartDuration };
+            const secondPart = { ...item, id: Math.random().toString(36).substr(2, 9), startTime: currentTime, duration: secondPartDuration };
+            track.items.splice(itemIdx, 1, firstPart, secondPart);
+            setSelectedItemId(secondPart.id);
+            break;
+          }
+        }
+      }
+      return { ...prev, timeline: newTimeline };
+    });
+  };
+
+  const handleDelete = () => {
+    if (!selectedItemId) return;
+    setProject(prev => ({
+      ...prev,
+      timeline: prev.timeline.map(t => ({
+        ...t,
+        items: t.items.filter(i => i.id !== selectedItemId)
+      }))
+    }));
+    setSelectedItemId(null);
+  };
+
+  const handleTrackDrop = (e: React.DragEvent, targetTrackId: string) => {
+    e.preventDefault();
+    const type = e.dataTransfer.getData('type');
+    const rect = timelineContentRef.current!.getBoundingClientRect();
+    const x = e.clientX - (rect.left + HEADER_WIDTH) + timelineContentRef.current!.scrollLeft;
+    const dropStartTime = Math.max(0, x / PIXELS_PER_SECOND);
+    if (type === 'timeline-item' && draggingItem) {
+      setProject(prev => {
+        const sourceTrack = prev.timeline.find(t => t.id === draggingItem.trackId);
+        const item = sourceTrack?.items.find(i => i.id === draggingItem.itemId);
+        if (!item) return prev;
+        const targetTrack = prev.timeline.find(t => t.id === targetTrackId);
+        if (sourceTrack?.type !== targetTrack?.type) return prev;
+        return {
+          ...prev,
+          timeline: prev.timeline.map(t => {
+            if (t.id === draggingItem.trackId && t.id === targetTrackId) return { ...t, items: t.items.map(i => i.id === item.id ? { ...i, startTime: dropStartTime } : i) };
+            if (t.id === draggingItem.trackId) return { ...t, items: t.items.filter(i => i.id !== item.id) };
+            if (t.id === targetTrackId) return { ...t, items: [...t.items, { ...item, startTime: dropStartTime }] };
+            return t;
+          })
+        };
+      });
+    } else if (type === 'library-asset' && draggingAssetId) {
+      const asset = project.assets.find(a => a.id === draggingAssetId);
+      if (asset) addToTimeline(asset, targetTrackId, dropStartTime);
+    }
+    setDraggingItem(null);
+    setDraggingAssetId(null);
+  };
+
+  const handleAiAction = async () => {
+    if (!aiInput.trim()) return;
+    const prompt = aiInput;
+    setAiInput('');
+    setMessages(prev => [...prev, { role: 'user', text: prompt }]);
+    setIsAiLoading(true);
+    try {
+      if (aiMode === AIServiceMode.CHAT) {
+        const response = await geminiService.askAssistant(prompt, \`Project: \${project.title}, Assets: \${project.assets.length}\`);
+        setMessages(prev => [...prev, { role: 'ai', text: response || "" }]);
+      } else if (aiMode === AIServiceMode.VIDEO_GEN) {
+        setMessages(prev => [...prev, { role: 'ai', text: "Generating video... This may take a few minutes." }]);
+        const url = await geminiService.generateVideo(prompt);
+        const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Video', type: 'video', url, duration: 5 };
+        setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+        setMessages(prev => [...prev, { role: 'ai', text: "Video generated successfully! Check your media library." }]);
+      } else if (aiMode === AIServiceMode.IMAGE_GEN) {
+        setMessages(prev => [...prev, { role: 'ai', text: "Generating image..." }]);
+        const url = await geminiService.generateImage(prompt);
+        const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
+        setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+        setMessages(prev => [...prev, { role: 'ai', text: "Image generated! Added to your library." }]);
+      } else if (aiMode === AIServiceMode.SPEECH_GEN) {
+        setMessages(prev => [...prev, { role: 'ai', text: "Generating speech..." }]);
+        const url = await geminiService.generateNarration(prompt);
+        if (url) {
+          const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Narration', type: 'audio', url, duration: 5 };
+          setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+          setMessages(prev => [...prev, { role: 'ai', text: "Speech generated! Check audio in library." }]);
+        }
+      } else if (aiMode === AIServiceMode.SEARCH) {
+        const result = await geminiService.searchMediaReferences(prompt);
+        setMessages(prev => [...prev, { role: 'ai', text: result.text, links: result.links }]);
+      }
+    } catch (e) {
+      setMessages(prev => [...prev, { role: 'ai', text: \`Error: \${(e as Error).message}\` }]);
+    } finally { 
+      setIsAiLoading(false); 
+    }
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+        <Loader2 className="animate-spin text-violet-500" size={48} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onAuthSuccess={() => {}} />;
+  }
+
+  return (
+    <div className="flex flex-col h-screen overflow-hidden bg-zinc-950 font-sans text-zinc-200">
+      <header className="h-14 border-b border-zinc-800/50 flex items-center justify-between px-6 glass shrink-0 z-30">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-gradient-to-tr from-violet-600 to-indigo-500 rounded-lg flex items-center justify-center">
+            <Sparkles size={18} className="text-white" />
+          </div>
+          <h1 className="font-display font-bold text-lg bg-clip-text text-transparent bg-gradient-to-r from-white to-zinc-400">
+            Lumina <span className="text-violet-500">Studio</span>
+          </h1>
+          <input type="text" value={project.title} onChange={(e) => setProject(prev => ({ ...prev, title: e.target.value }))} className="ml-4 bg-transparent border-b border-transparent hover:border-zinc-700 focus:border-violet-500 outline-none px-2 py-1 text-sm" />
+        </div>
+        <div className="flex items-center gap-4">
+           {saveStatus === 'saving' && <div className="flex items-center gap-2 text-xs text-zinc-400"><Loader2 size={12} className="animate-spin"/> Saving...</div>}
+           {saveStatus === 'saved' && <div className="flex items-center gap-2 text-xs text-green-400">Saved ✓</div>}
+           <button onClick={handleSaveProject} disabled={isSaving} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><Save size={14} /> Save</button>
+           <button onClick={handleLoadProjects} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><FolderOpen size={14} /> Load</button>
+           <button onClick={handleSignOut} className="px-3 py-1.5 text-xs font-semibold bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-md transition-all flex items-center gap-2"><LogOut size={14} /> Sign Out</button>
+        </div>
+      </header>
