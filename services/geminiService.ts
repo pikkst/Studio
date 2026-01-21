@@ -60,33 +60,7 @@ export const geminiService = {
     };
   },
 
-  /**
-   * Generate Video using Veo
-   */
-  async generateVideo(prompt: string, apiKey?: string, aspectRatio: '16:9' | '9:16' = '16:9') {
-    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
-    if (!key) throw new Error('Gemini API key is required');
-    const ai = new GoogleGenAI({ apiKey: key });
-    let operation = await ai.models.generateVideos({
-      model: 'veo-3.1-fast-generate-preview',
-      prompt: prompt,
-      config: {
-        numberOfVideos: 1,
-        resolution: '720p',
-        aspectRatio: aspectRatio
-      }
-    });
 
-    while (!operation.done) {
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      operation = await ai.operations.getVideosOperation({ operation: operation });
-    }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    const response = await fetch(`${downloadLink}&key=${key}`);
-    const blob = await response.blob();
-    return URL.createObjectURL(blob);
-  },
 
   /**
    * Generate Image for assets

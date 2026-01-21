@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music, Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink, ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock, Save, FolderOpen, LogOut, Settings } from 'lucide-react';
+import { Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music, Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink, ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock, Save, FolderOpen, LogOut, Settings, Download, Type } from 'lucide-react';
 import { Asset, ProjectState, AIServiceMode, TimelineItem } from './types';
 import { geminiService } from './services/geminiService';
 import { supabaseService } from './services/supabaseService';
@@ -8,6 +8,9 @@ import { AuthScreen } from './components/AuthScreen';
 import { AudioWaveform } from './components/AudioWaveform';
 import { SettingsModal } from './components/SettingsModal';
 import { Toast } from './components/Toast';
+import { VideoCanvas } from './components/VideoCanvas';
+import { VideoExporter } from './components/VideoExporter';
+import { PropertiesPanel } from './components/PropertiesPanel';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<SupabaseUser | null>(null);
@@ -19,6 +22,7 @@ const App: React.FC = () => {
     timeline: [
       { id: 'v1', name: 'Video 1', type: 'video', volume: 1, items: [] },
       { id: 'v2', name: 'Video 2', type: 'video', volume: 1, items: [] },
+      { id: 't1', name: 'Text/Subtitles', type: 'text', volume: 1, items: [] },
       { id: 'a1', name: 'Background', type: 'audio', volume: 0.5, items: [] },
       { id: 'a2', name: 'Voiceover', type: 'audio', volume: 1, items: [] }
     ]
@@ -41,6 +45,8 @@ const App: React.FC = () => {
   const [draggingItem, setDraggingItem] = useState<{itemId: string, trackId: string} | null>(null);
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
   const [resizingItem, setResizingItem] = useState<{itemId: string, side: 'start' | 'end', initialX: number, initialStart: number, initialDuration: number} | null>(null);
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(1);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [userGeminiKey, setUserGeminiKey] = useState(() => {
@@ -55,7 +61,7 @@ const App: React.FC = () => {
   const playheadIntervalRef = useRef<number | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const PIXELS_PER_SECOND = 30;
+  const PIXELS_PER_SECOND = 30 * timelineZoom;
   const HEADER_WIDTH = 160;
 
   useEffect(() => {
@@ -68,6 +74,48 @@ const App: React.FC = () => {
     const { data: { subscription } } = supabaseService.onAuthStateChange((user) => setUser(user));
     return () => subscription.unsubscribe();
   }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Space - play/pause (when not in input)
+      if (e.code === 'Space' && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+      }
+      
+      // Delete - delete selected item
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedItemId && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        handleDelete();
+      }
+      
+      // Ctrl+S - save project
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSaveProject();
+      }
+      
+      // Ctrl+E - export
+      if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
+        e.preventDefault();
+        setIsExportOpen(true);
+      }
+      
+      // Arrow keys - nudge playhead
+      if (e.key === 'ArrowLeft' && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        setCurrentTime(prev => Math.max(0, prev - (e.shiftKey ? 1 : 0.1)));
+      }
+      if (e.key === 'ArrowRight' && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        setCurrentTime(prev => prev + (e.shiftKey ? 1 : 0.1));
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedItemId, isPlaying]);
 
   const handleSignOut = async () => {
     await supabaseService.signOut();
@@ -125,25 +173,33 @@ const App: React.FC = () => {
       return asset?.type === 'audio';
     });
     const itemIds = new Set(audioItems.map(i => i.id));
+    
+    // Remove old audio elements
     for (const id of audioElementsRef.current.keys()) {
       if (!itemIds.has(id)) {
         const audio = audioElementsRef.current.get(id);
         if (audio) {
           audio.pause();
+          audio.currentTime = 0;
           audio.src = "";
           audio.load();
+          audio.remove?.();
         }
         audioElementsRef.current.delete(id);
       }
     }
+    
+    // Create new audio elements
     audioItems.forEach(item => {
       if (!audioElementsRef.current.has(item.id)) {
         const asset = project.assets.find(a => a.id === item.assetId);
         if (asset) {
           const audio = new Audio(asset.url);
-          audio.preload = "auto";
+          audio.preload = "metadata";
+          audio.volume = 0;
           audio.onwaiting = () => setIsBuffering(true);
           audio.oncanplay = () => setIsBuffering(false);
+          audio.onerror = (e) => console.error('Audio load error:', e);
           audioElementsRef.current.set(item.id, audio);
         }
       }
@@ -163,19 +219,32 @@ const App: React.FC = () => {
           }
         }
         if (!item || !parentTrack) return;
+        
         const isInside = currentTime >= item.startTime && currentTime < (item.startTime + item.duration);
         audio.volume = parentTrack.volume;
+        
         if (isPlaying && isInside) {
           const targetTime = currentTime - item.startTime;
-          if (Math.abs(audio.currentTime - targetTime) > 0.2) audio.currentTime = targetTime;
-          if (audio.paused) audio.play().catch(e => console.warn("Playback prevented", e));
+          
+          // Only adjust time if significantly out of sync
+          if (Math.abs(audio.currentTime - targetTime) > 0.3) {
+            audio.currentTime = targetTime;
+          }
+          
+          // Only call play() once when starting
+          if (audio.paused) {
+            audio.play().catch(e => console.warn("Playback prevented", e));
+          }
         } else {
-          if (!audio.paused) audio.pause();
-          const targetTimeWhenPaused = Math.max(0, currentTime - item.startTime);
-          if (Math.abs(audio.currentTime - targetTimeWhenPaused) > 0.1) audio.currentTime = targetTimeWhenPaused;
+          // Pause immediately when out of range
+          if (!audio.paused) {
+            audio.pause();
+            audio.currentTime = 0;
+          }
         }
       });
     };
+    
     if (isPlaying) {
       const startTimeRef = performance.now() - (currentTime * 1000);
       const update = (now: number) => {
@@ -272,16 +341,43 @@ const App: React.FC = () => {
     }
   };
 
+  const addTextToTimeline = () => {
+    const text = prompt('Enter text:');
+    if (!text) return;
+
+    const textAsset: Asset = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: 'Text: ' + text.slice(0, 20),
+      type: 'text',
+      url: '',
+      duration: 5,
+      textContent: text,
+      textStyle: {
+        fontFamily: 'Inter',
+        fontSize: 48,
+        color: '#ffffff',
+        align: 'center',
+        bold: false,
+        italic: false
+      }
+    };
+
+    setProject(prev => ({ ...prev, assets: [textAsset, ...prev.assets] }));
+    addToTimeline(textAsset);
+  };
+
   const addToTimeline = (asset: Asset, targetTrackId?: string, startTime: number = currentTime) => {
     const resolvedTrackId = targetTrackId || project.timeline.find(t => 
-      (asset.type === 'audio' && t.type === 'audio') || (asset.type !== 'audio' && t.type === 'video')
+      (asset.type === 'audio' && t.type === 'audio') || 
+      (asset.type === 'text' && t.type === 'text') ||
+      (asset.type !== 'audio' && asset.type !== 'text' && t.type === 'video')
     )?.id || 'v1';
     const newItemId = Math.random().toString(36).substr(2, 9);
     const newTimelineItem: TimelineItem = {
       id: newItemId,
       assetId: asset.id,
       startTime: startTime,
-      duration: asset.duration || (asset.type === 'image' ? 5 : 10),
+      duration: asset.duration || (asset.type === 'image' || asset.type === 'text' ? 5 : 10),
       layer: 0
     };
     setProject(prev => ({
@@ -291,6 +387,19 @@ const App: React.FC = () => {
       )
     }));
     setSelectedItemId(newItemId);
+  };
+
+  const handleUpdateItem = (updates: Partial<TimelineItem>) => {
+    if (!selectedItemId) return;
+    setProject(prev => ({
+      ...prev,
+      timeline: prev.timeline.map(track => ({
+        ...track,
+        items: track.items.map(item =>
+          item.id === selectedItemId ? { ...item, ...updates } : item
+        )
+      }))
+    }));
   };
 
   const handleSplit = () => {
@@ -374,12 +483,6 @@ const App: React.FC = () => {
       if (aiMode === AIServiceMode.CHAT) {
         const response = await geminiService.askAssistant(prompt, `Project: ${project.title}, Assets: ${project.assets.length}`, userGeminiKey);
         setMessages(prev => [...prev, { role: 'ai', text: response || "" }]);
-      } else if (aiMode === AIServiceMode.VIDEO_GEN) {
-        setMessages(prev => [...prev, { role: 'ai', text: "Generating video... This may take a few minutes." }]);
-        const url = await geminiService.generateVideo(prompt, userGeminiKey);
-        const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Video', type: 'video', url, duration: 5 };
-        setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
-        setMessages(prev => [...prev, { role: 'ai', text: "Video generated successfully! Check your media library." }]);
       } else if (aiMode === AIServiceMode.IMAGE_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating image..." }]);
         const url = await geminiService.generateImage(prompt, userGeminiKey);
@@ -412,6 +515,14 @@ const App: React.FC = () => {
     setToast({ message: 'API key saved successfully!', type: 'success' });
   };
 
+  // Get selected item and asset
+  const selectedItem = selectedItemId 
+    ? project.timeline.flatMap(t => t.items).find(i => i.id === selectedItemId) || null
+    : null;
+  const selectedAsset = selectedItem 
+    ? project.assets.find(a => a.id === selectedItem.assetId) || null
+    : null;
+
   if (authLoading) {
     return <div className="min-h-screen bg-zinc-950 flex items-center justify-center"><Loader2 className="animate-spin text-violet-500" size={48} /></div>;
   }
@@ -431,6 +542,7 @@ const App: React.FC = () => {
         <div className="flex items-center gap-4">
           {saveStatus === 'saving' && <div className="flex items-center gap-2 text-xs text-zinc-400"><Loader2 size={12} className="animate-spin"/> Saving...</div>}
           {saveStatus === 'saved' && <div className="flex items-center gap-2 text-xs text-green-400">Saved ✓</div>}
+          <button onClick={() => setIsExportOpen(true)} className="px-3 py-1.5 text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-md transition-all flex items-center gap-2"><Download size={14} /> Export</button>
           <button onClick={() => setIsSettingsOpen(true)} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><Settings size={14} /> Settings</button>
           <button onClick={handleSaveProject} disabled={isSaving} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><Save size={14} /> Save</button>
           <button onClick={handleLoadProjects} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><FolderOpen size={14} /> Load</button>
@@ -450,9 +562,14 @@ const App: React.FC = () => {
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-[10px] font-bold text-zinc-500 uppercase">Library</h3>
-                  <button onClick={() => fileInputRef.current?.click()} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors" disabled={isUploading}>
-                    {isUploading ? <Loader2 size={14} className="animate-spin"/> : <Plus size={14} />}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={addTextToTimeline} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors" title="Add Text">
+                      <Type size={14} />
+                    </button>
+                    <button onClick={() => fileInputRef.current?.click()} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors" disabled={isUploading}>
+                      {isUploading ? <Loader2 size={14} className="animate-spin"/> : <Plus size={14} />}
+                    </button>
+                  </div>
                   <input type="file" ref={fileInputRef} multiple accept="video/*,audio/*,image/*" className="hidden" onChange={(e) => e.target.files && processFiles(e.target.files)} />
                 </div>
                 {isUploading && <div className="p-3 bg-violet-600/10 border border-violet-500/20 rounded-lg flex items-center gap-3"><Loader2 size={14} className="animate-spin text-violet-500"/><span className="text-[10px] font-bold text-violet-400">Uploading to cloud...</span></div>}
@@ -461,8 +578,9 @@ const App: React.FC = () => {
                   {project.assets.map(asset => (
                     <div key={asset.id} draggable onDragStart={(e) => {setDraggingAssetId(asset.id); e.dataTransfer.setData('type', 'library-asset');}} onClick={() => addToTimeline(asset)} className="group relative aspect-video bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 hover:border-violet-500 transition-all cursor-grab active:cursor-grabbing">
                       <div className="w-full h-full flex items-center justify-center">
-                        {asset.type === 'audio' ? <Music className="text-zinc-600" size={20} /> : asset.type === 'image' ? <ImageIcon className="text-zinc-600" size={20} /> : <Video className="text-zinc-600" size={20} />}
+                        {asset.type === 'audio' ? <Music className="text-zinc-600" size={20} /> : asset.type === 'image' ? <ImageIcon className="text-zinc-600" size={20} /> : asset.type === 'text' ? <Type className="text-zinc-600" size={20} /> : <Video className="text-zinc-600" size={20} />}
                         {asset.thumbnail && <img src={asset.thumbnail} className="absolute inset-0 w-full h-full object-cover opacity-40" alt={asset.name} />}
+                        {asset.textContent && <div className="absolute inset-0 flex items-center justify-center p-2 text-[10px] font-bold text-zinc-300 text-center line-clamp-3">{asset.textContent}</div>}
                         {asset.duration && <div className="absolute top-1 right-1 px-1 bg-black/60 rounded flex items-center gap-1 text-[7px] text-zinc-300"><Clock size={8}/> {asset.duration >= 60 ? `${Math.floor(asset.duration/60)}:${Math.floor(asset.duration%60).toString().padStart(2,'0')}` : `${asset.duration.toFixed(1)}s`}</div>}
                       </div>
                       <div className="absolute bottom-0 inset-x-0 p-1 bg-black/60 text-[8px] truncate">{asset.name}</div>
@@ -477,11 +595,13 @@ const App: React.FC = () => {
         <div className="flex-1 flex flex-col min-w-0 bg-black relative">
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="w-full max-w-4xl aspect-video bg-zinc-900 rounded-2xl border border-zinc-800 shadow-2xl overflow-hidden flex flex-col relative group/canvas">
-              <div className="flex-1 flex items-center justify-center relative">
+              <div className="flex-1 flex items-center justify-center relative bg-black">
                 {isBuffering && isPlaying && <div className="absolute inset-0 bg-black/40 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-50"><Loader2 size={32} className="animate-spin text-violet-500"/><span className="text-xs font-bold tracking-widest text-violet-400">BUFFERING</span></div>}
-                <Play size={48} className="opacity-5" />
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/canvas:opacity-100 transition-opacity">
-                  <button onClick={() => setIsPlaying(!isPlaying)} className="w-16 h-16 bg-white/10 backdrop-blur rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all">{isPlaying ? <Pause size={32} fill="white"/> : <Play size={32} fill="white" className="ml-1"/>}</button>
+                <VideoCanvas currentTime={currentTime} timeline={project.timeline} assets={project.assets} isPlaying={isPlaying} />
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/canvas:opacity-100 transition-opacity pointer-events-none">
+                  <div className="pointer-events-auto">
+                    <button onClick={() => setIsPlaying(!isPlaying)} className="w-16 h-16 bg-white/10 backdrop-blur rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all">{isPlaying ? <Pause size={32} fill="white"/> : <Play size={32} fill="white" className="ml-1"/>}</button>
+                  </div>
                 </div>
               </div>
               <div className="h-12 border-t border-zinc-800/50 flex items-center justify-between px-6 bg-zinc-950/90 backdrop-blur">
@@ -503,7 +623,6 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <select value={aiMode} onChange={(e) => setAiMode(e.target.value as AIServiceMode)} className="text-[9px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 outline-none">
                     <option value={AIServiceMode.CHAT}>Chat</option>
-                    <option value={AIServiceMode.VIDEO_GEN}>Video Gen</option>
                     <option value={AIServiceMode.IMAGE_GEN}>Image Gen</option>
                     <option value={AIServiceMode.SPEECH_GEN}>Speech Gen</option>
                     <option value={AIServiceMode.SEARCH}>Search</option>
@@ -531,7 +650,7 @@ const App: React.FC = () => {
               </div>
               <div className="p-3 border-t border-zinc-800/50 bg-zinc-950/50">
                 <div className="relative">
-                  <textarea value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleAiAction())} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 pr-10 text-xs focus:ring-1 focus:ring-violet-500 outline-none resize-none h-16 shadow-inner" placeholder={aiMode === AIServiceMode.VIDEO_GEN ? "Describe video to generate..." : aiMode === AIServiceMode.IMAGE_GEN ? "Describe image..." : aiMode === AIServiceMode.SPEECH_GEN ? "Text to speak..." : aiMode === AIServiceMode.SEARCH ? "Search for media..." : "Ask AI..."} />
+                  <textarea value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleAiAction())} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 pr-10 text-xs focus:ring-1 focus:ring-violet-500 outline-none resize-none h-16 shadow-inner" placeholder={aiMode === AIServiceMode.IMAGE_GEN ? "Describe image..." : aiMode === AIServiceMode.SPEECH_GEN ? "Text to speak..." : aiMode === AIServiceMode.SEARCH ? "Search for media..." : "Ask AI..."} />
                   <button onClick={handleAiAction} disabled={isAiLoading} className="absolute bottom-2 right-2 p-1.5 bg-violet-600 hover:bg-violet-500 rounded-md transition-colors disabled:opacity-50"><Send size={12} /></button>
                 </div>
               </div>
@@ -541,14 +660,22 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="h-80 border-t border-zinc-800/50 glass flex flex-col z-10 select-none overflow-hidden">
-        <div className="h-10 border-b border-zinc-800/50 flex items-center px-4 bg-zinc-900/50 gap-4 shrink-0">
-          <div className="flex items-center gap-1 border-r border-zinc-800 pr-4">
-            <button onClick={handleSplit} disabled={!selectedItemId} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors flex items-center gap-2 text-[10px] font-bold uppercase"><Scissors size={14} /> Split</button>
-            <button onClick={handleDelete} disabled={!selectedItemId} className="p-1.5 hover:bg-red-900/40 text-red-400 hover:text-red-300 rounded disabled:opacity-30 transition-colors flex items-center gap-2 text-[10px] font-bold uppercase"><Trash2 size={14} /> Delete</button>
+      <div className="h-80 border-t border-zinc-800/50 glass flex z-10 select-none overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0">
+          <div className="h-10 border-b border-zinc-800/50 flex items-center px-4 bg-zinc-900/50 gap-4 shrink-0">
+            <div className="flex items-center gap-1 border-r border-zinc-800 pr-4">
+              <button onClick={handleSplit} disabled={!selectedItemId} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors flex items-center gap-2 text-[10px] font-bold uppercase"><Scissors size={14} /> Split</button>
+              <button onClick={handleDelete} disabled={!selectedItemId} className="p-1.5 hover:bg-red-900/40 text-red-400 hover:text-red-300 rounded disabled:opacity-30 transition-colors flex items-center gap-2 text-[10px] font-bold uppercase"><Trash2 size={14} /> Delete</button>
+            </div>
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2 flex items-center gap-2"><Layers size={14}/> Timeline Editor</div>
+            <div className="flex items-center gap-2 border-l border-zinc-800 pl-4">
+              <span className="text-[9px] text-zinc-500">Zoom:</span>
+              <button onClick={() => setTimelineZoom(prev => Math.max(0.5, prev - 0.25))} className="px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 rounded transition-colors">−</button>
+              <span className="text-[9px] text-zinc-400 font-mono w-12 text-center">{(timelineZoom * 100).toFixed(0)}%</span>
+              <button onClick={() => setTimelineZoom(prev => Math.min(3, prev + 0.25))} className="px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 rounded transition-colors">+</button>
+            </div>
+            {selectedItem && <div className="ml-auto text-[10px] text-violet-400 font-semibold">Item Selected →</div>}
           </div>
-          <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2 flex items-center gap-2"><Layers size={14}/> Timeline Editor</div>
-        </div>
 
         <div className="h-8 border-b border-zinc-800/50 flex items-center bg-zinc-900/40 relative shrink-0">
           <div className="w-40 border-r border-zinc-800 h-full flex items-center px-4 bg-zinc-950/20 sticky left-0 z-30"><span className="text-[10px] font-bold opacity-30 uppercase tracking-tighter">Timeline</span></div>
@@ -578,13 +705,13 @@ const App: React.FC = () => {
                     const asset = project.assets.find(a => a.id === item.assetId);
                     const isSelected = selectedItemId === item.id;
                     return (
-                      <div key={item.id} onClick={(e) => {e.stopPropagation(); setSelectedItemId(item.id);}} draggable onDragStart={e => {setDraggingItem({itemId:item.id, trackId:track.id}); e.dataTransfer.setData('type', 'timeline-item');}} style={{ left: `${item.startTime * PIXELS_PER_SECOND}px`, width: `${item.duration * PIXELS_PER_SECOND}px` }} className={`absolute top-2 bottom-2 rounded border shadow-xl flex flex-col justify-center px-2 overflow-hidden transition-all group/item cursor-grab active:cursor-grabbing ${isSelected ? 'ring-2 ring-violet-500 border-violet-400 z-40 bg-opacity-40' : 'border-zinc-700'} ${track.type === 'audio' ? 'bg-indigo-600/20' : 'bg-violet-600/20'}`}>
+                      <div key={item.id} onClick={(e) => {e.stopPropagation(); setSelectedItemId(item.id);}} draggable onDragStart={e => {setDraggingItem({itemId:item.id, trackId:track.id}); e.dataTransfer.setData('type', 'timeline-item');}} style={{ left: `${item.startTime * PIXELS_PER_SECOND}px`, width: `${item.duration * PIXELS_PER_SECOND}px` }} className={`absolute top-2 bottom-2 rounded border shadow-xl flex flex-col justify-center px-2 overflow-hidden transition-all group/item cursor-grab active:cursor-grabbing ${isSelected ? 'ring-2 ring-violet-500 border-violet-400 z-40 bg-opacity-40' : 'border-zinc-700'} ${track.type === 'audio' ? 'bg-indigo-600/20' : track.type === 'text' ? 'bg-amber-600/20' : 'bg-violet-600/20'}`}>
                         {asset?.type === 'audio' && <AudioWaveform url={asset.url} color="#818cf8" />}
                         <div onMouseDown={(e) => handleResizeStart(e, item, 'start')} className="resize-handle absolute left-0 top-0 bottom-0 w-1.5 bg-white/20 hover:bg-violet-500 cursor-ew-resize opacity-0 group-hover/item:opacity-100 z-50 transition-all" />
                         <div onMouseDown={(e) => handleResizeStart(e, item, 'end')} className="resize-handle absolute right-0 top-0 bottom-0 w-1.5 bg-white/20 hover:bg-violet-500 cursor-ew-resize opacity-0 group-hover/item:opacity-100 z-50 transition-all" />
                         <div className="relative z-10 flex items-center justify-between gap-1 pointer-events-none">
                           <div className="flex items-center gap-1 truncate">
-                            {asset?.type === 'audio' ? <Music size={10} className="text-indigo-400" /> : asset?.type === 'image' ? <ImageIcon size={10} className="text-zinc-400" /> : <Video size={10} className="text-violet-400" />}
+                            {asset?.type === 'audio' ? <Music size={10} className="text-indigo-400" /> : asset?.type === 'image' ? <ImageIcon size={10} className="text-zinc-400" /> : asset?.type === 'text' ? <Type size={10} className="text-amber-400" /> : <Video size={10} className="text-violet-400" />}
                             <span className="text-[9px] font-bold truncate text-zinc-100">{asset?.name}</span>
                           </div>
                           <GripHorizontal size={10} className="text-zinc-600 opacity-0 group-hover/item:opacity-100 transition-opacity" />
@@ -601,6 +728,17 @@ const App: React.FC = () => {
             <div className="absolute top-0 bottom-0 w-[2px] bg-red-500/30 pointer-events-none z-10" style={{ left: `${currentTime * PIXELS_PER_SECOND}px` }} />
           </div>
         </div>
+        </div>
+
+        {/* Properties Panel */}
+        {selectedItem && selectedAsset && (
+          <PropertiesPanel
+            selectedItem={selectedItem}
+            asset={selectedAsset}
+            onUpdateItem={handleUpdateItem}
+            onClose={() => setSelectedItemId(null)}
+          />
+        )}
       </div>
 
       {/* Settings Modal */}
@@ -609,6 +747,13 @@ const App: React.FC = () => {
         onClose={() => setIsSettingsOpen(false)}
         currentApiKey={userGeminiKey}
         onSaveApiKey={handleSaveApiKey}
+      />
+
+      {/* Video Exporter */}
+      <VideoExporter
+        project={project}
+        isOpen={isExportOpen}
+        onClose={() => setIsExportOpen(false)}
       />
 
       {/* Toast Notifications */}

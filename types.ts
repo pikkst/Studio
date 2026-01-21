@@ -8,6 +8,8 @@ export interface Asset {
   name: string;
   thumbnail?: string;
   duration?: number;
+  textContent?: string;
+  textStyle?: TextStyle;
 }
 
 export interface ProjectState {
@@ -20,7 +22,7 @@ export interface ProjectState {
 export interface TimelineTrack {
   id: string;
   name: string;
-  type: 'video' | 'audio';
+  type: 'video' | 'audio' | 'text';
   volume: number; // 0 to 1
   items: TimelineItem[];
 }
@@ -31,12 +33,34 @@ export interface TimelineItem {
   startTime: number;
   duration: number;
   layer: number;
+  transitionIn?: TransitionType;
+  transitionOut?: TransitionType;
+  transitionDuration?: number;
+  opacity?: number;
+  volume?: number;
+  filters?: {
+    brightness?: number;
+    contrast?: number;
+    saturation?: number;
+    blur?: number;
+  };
 }
 
 export enum AIServiceMode {
   CHAT = 'CHAT',
-  VIDEO_GEN = 'VIDEO_GEN',
   IMAGE_GEN = 'IMAGE_GEN',
   SPEECH_GEN = 'SPEECH_GEN',
   SEARCH = 'SEARCH'
+}
+
+export type TransitionType = 'none' | 'fade' | 'dissolve' | 'wipe' | 'slide';
+
+export interface TextStyle {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  backgroundColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  align: 'left' | 'center' | 'right';
 }
