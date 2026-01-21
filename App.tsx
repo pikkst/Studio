@@ -69,6 +69,33 @@ const App: React.FC = () => {
     const initAuth = async () => {
       const currentUser = await supabaseService.getCurrentUser();
       setUser(currentUser);
+      
+      // Auto-load last project and assets when user is logged in
+      if (currentUser) {
+        try {
+          const projects = await supabaseService.loadProjects(currentUser.id);
+          if (projects.length > 0) {
+            setProject(projects[0].data);
+            setToast({ message: `Loaded: ${projects[0].data.title}`, type: 'success' });
+          }
+          
+          const assets = await supabaseService.loadAssets(currentUser.id);
+          if (assets.length > 0) {
+            const mappedAssets: Asset[] = assets.map(a => ({
+              id: a.id,
+              name: a.name,
+              type: a.type as 'video' | 'audio' | 'image' | 'text',
+              url: a.url,
+              thumbnail: a.thumbnail_url,
+              duration: a.duration
+            }));
+            setProject(prev => ({ ...prev, assets: mappedAssets }));
+          }
+        } catch (error) {
+          console.error('Auto-load failed:', error);
+        }
+      }
+      
       setAuthLoading(false);
     };
     initAuth();
