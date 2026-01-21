@@ -115,5 +115,124 @@ export const geminiService = {
     const bytes = decode(base64Audio);
     const blob = new Blob([bytes], { type: 'audio/pcm' });
     return URL.createObjectURL(blob);
+  },
+
+  /**
+   * Analyze timeline and give smart editing suggestions
+   */
+  async analyzeTimeline(timelineData: any, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
+    
+    const prompt = `You are a professional video editor. Analyze this timeline data and provide practical editing suggestions:
+
+Timeline: ${JSON.stringify(timelineData, null, 2)}
+
+Provide:
+1. Pacing analysis (is it too fast/slow?)
+2. Transition suggestions (where to add fades, cuts)
+3. Audio mixing tips (volume levels, balance)
+4. Visual improvements (text placement, timing)
+5. 3 specific actionable improvements
+
+Format as numbered list, keep it concise and practical.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        systemInstruction: "You are a professional video editor assistant. Give practical, actionable advice.",
+      }
+    });
+    return response.text;
+  },
+
+  /**
+   * Generate smart cut points based on timeline analysis
+   */
+  async suggestCutPoints(timelineData: any, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
+    
+    const prompt = `Analyze this video timeline and suggest optimal cut points for better pacing:
+
+${JSON.stringify(timelineData, null, 2)}
+
+Return a JSON array of cut suggestions with this format:
+[
+  { "time": 5.5, "reason": "Natural pause point", "action": "split" },
+  { "time": 12.3, "reason": "Long segment", "action": "trim" }
+]
+
+Only suggest cuts that would improve the video. Max 5 suggestions.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+    });
+    
+    try {
+      const text = response.text;
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse cut suggestions:', e);
+    }
+    return [];
+  },
+
+  /**
+   * Generate narration script based on timeline content
+   */
+  async generateNarrationScript(timelineData: any, style: string, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
+    
+    const prompt = `Create a ${style} narration script for this video timeline:
+
+${JSON.stringify(timelineData, null, 2)}
+
+Style: ${style}
+Duration: ${timelineData.duration} seconds
+
+Write a natural, engaging voiceover script that matches the video pacing. Include timing markers like [0:05] for when each line should be spoken.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        systemInstruction: "You are a professional voiceover scriptwriter. Write clear, engaging narration.",
+      }
+    });
+    return response.text;
+  },
+
+  /**
+   * Smart project suggestions based on current state
+   */
+  async getSmartSuggestions(projectData: any, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
+    
+    const prompt = `Analyze this video project and give 3 quick actionable tips:
+
+Project: "${projectData.title}"
+Assets: ${projectData.videoCount} videos, ${projectData.audioCount} audio, ${projectData.textCount} text
+Duration: ${projectData.totalDuration}s
+
+Focus on: missing elements, pacing, polish, viewer engagement.
+Format: "✓ [Tip]" one per line, max 15 words each.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+    });
+    return response.text;
   }
 };

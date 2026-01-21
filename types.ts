@@ -50,7 +50,10 @@ export enum AIServiceMode {
   CHAT = 'CHAT',
   IMAGE_GEN = 'IMAGE_GEN',
   SPEECH_GEN = 'SPEECH_GEN',
-  SEARCH = 'SEARCH'
+  SEARCH = 'SEARCH',
+  AUTO_SUBTITLE = 'AUTO_SUBTITLE',
+  SCENE_ANALYSIS = 'SCENE_ANALYSIS',
+  SMART_EDIT = 'SMART_EDIT'
 }
 
 export type TransitionType = 'none' | 'fade' | 'dissolve' | 'wipe' | 'slide';

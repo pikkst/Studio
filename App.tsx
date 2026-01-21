@@ -11,6 +11,7 @@ import { Toast } from './components/Toast';
 import { VideoCanvas } from './components/VideoCanvas';
 import { VideoExporter } from './components/VideoExporter';
 import { PropertiesPanel } from './components/PropertiesPanel';
+import { SmartAIPanel } from './components/SmartAIPanel';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<SupabaseUser | null>(null);
@@ -136,6 +137,90 @@ const App: React.FC = () => {
       setTimeout(() => setSaveStatus('idle'), 3000);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSmartAIAction = async (action: string, params?: any) => {
+    setIsAiLoading(true);
+    try {
+      const timelineData = {
+        title: project.title,
+        duration: Math.max(...project.timeline.flatMap(track => track.items.map(item => item.startTime + item.duration)), 0),
+        tracks: project.timeline.map(track => ({
+          name: track.name,
+          type: track.type,
+          items: track.items.map(item => {
+            const asset = project.assets.find(a => a.id === item.assetId);
+            return {
+              startTime: item.startTime,
+              duration: item.duration,
+              assetName: asset?.name,
+              assetType: asset?.type,
+              textContent: asset?.textContent,
+            };
+          })
+        }))
+      };
+
+      switch (action) {
+        case 'AUTO_SUBTITLE': {
+          setMessages(m => [...m, { role: 'user', text: 'Generate auto-subtitles...' }]);
+          // Find audio tracks with content
+          const audioTracks = project.timeline.filter(t => t.type === 'audio' && t.items.length > 0);
+          if (audioTracks.length === 0) {
+            setMessages(m => [...m, { role: 'ai', text: '⚠️ No audio tracks found. Add audio first to generate subtitles.' }]);
+            break;
+          }
+          const result = await geminiService.analyzeTimeline(timelineData);
+          setMessages(m => [...m, { role: 'ai', text: `📝 Auto-Subtitle Analysis:\n\n${result}\n\n💡 To implement: Add text items to timeline based on audio transcription timestamps.` }]);
+          break;
+        }
+
+        case 'SCENE_ANALYSIS': {
+          setMessages(m => [...m, { role: 'user', text: 'Analyze scenes and suggest improvements...' }]);
+          const analysis = await geminiService.analyzeTimeline(timelineData);
+          setMessages(m => [...m, { role: 'ai', text: `🎬 Scene Analysis:\n\n${analysis}` }]);
+          break;
+        }
+
+        case 'SMART_EDIT': {
+          setMessages(m => [...m, { role: 'user', text: 'Find smart cut points...' }]);
+          const cuts = await geminiService.suggestCutPoints(timelineData);
+          if (cuts.length === 0) {
+            setMessages(m => [...m, { role: 'ai', text: '✂️ No obvious cut points found. Your timeline pacing looks good!' }]);
+          } else {
+            const cutText = cuts.map((c: any, i: number) => `${i+1}. ${c.time.toFixed(1)}s - ${c.reason} (${c.action})`).join('\n');
+            setMessages(m => [...m, { role: 'ai', text: `✂️ Smart Cut Suggestions:\n\n${cutText}\n\n💡 Click timeline at these points to split clips.` }]);
+          }
+          break;
+        }
+
+        case 'NARRATION': {
+          const style = params?.style || 'professional';
+          setMessages(m => [...m, { role: 'user', text: `Generate ${style} narration script...` }]);
+          const script = await geminiService.generateNarrationScript(timelineData, style);
+          setMessages(m => [...m, { role: 'ai', text: `🎙️ Narration Script:\n\n${script}\n\n💡 Use Speech Gen mode to convert this to audio.` }]);
+          break;
+        }
+
+        case 'CUSTOM': {
+          if (!params?.prompt) break;
+          setMessages(m => [...m, { role: 'user', text: params.prompt }]);
+          const suggestions = await geminiService.getSmartSuggestions({
+            title: project.title,
+            videoCount: project.assets.filter(a => a.type === 'video').length,
+            audioCount: project.assets.filter(a => a.type === 'audio').length,
+            textCount: project.assets.filter(a => a.type === 'text').length,
+            totalDuration: timelineData.duration,
+          });
+          setMessages(m => [...m, { role: 'ai', text: suggestions }]);
+          break;
+        }
+      }
+    } catch (error: any) {
+      setMessages(m => [...m, { role: 'ai', text: `❌ Error: ${error.message}` }]);
+    } finally {
+      setIsAiLoading(false);
     }
   };
 
@@ -631,22 +716,33 @@ const App: React.FC = () => {
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                {messages.length === 0 && <div className="h-full flex flex-col items-center justify-center opacity-20 text-center gap-2"><Sparkles size={32}/><p className="text-xs font-bold uppercase tracking-widest">Ask AI for help</p></div>}
-                {messages.map((m, idx) => (
-                  <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[85%] rounded-xl px-3 py-2 text-xs shadow-lg ${m.role === 'user' ? 'bg-zinc-800 text-white' : 'bg-violet-600/20 border border-violet-500/30 text-zinc-100'}`}>
-                      {m.text}
-                      {m.links && m.links.length > 0 && (
-                        <div className="mt-2 space-y-1">
-                          {m.links.map((link, i) => (
-                            <a key={i} href={link.uri} target="_blank" rel="noopener noreferrer" className="block text-violet-300 hover:text-violet-200 text-[10px] flex items-center gap-1"><ExternalLink size={10} /> {link.title}</a>
-                          ))}
-                        </div>
-                      )}
+                <SmartAIPanel
+                  onAction={handleSmartAIAction}
+                  isLoading={isAiLoading}
+                  projectContext={{
+                    totalDuration: Math.max(...project.timeline.flatMap(track => track.items.map(item => item.startTime + item.duration)), 0),
+                    videoCount: project.assets.filter(a => a.type === 'video').length,
+                    audioCount: project.assets.filter(a => a.type === 'audio').length,
+                    textCount: project.assets.filter(a => a.type === 'text').length,
+                  }}
+                />
+                {messages.length > 0 && <div className="space-y-4 border-t border-zinc-800 pt-4 mt-4">
+                  {messages.map((m, idx) => (
+                    <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] rounded-xl px-3 py-2 text-xs shadow-lg ${m.role === 'user' ? 'bg-zinc-800 text-white' : 'bg-violet-600/20 border border-violet-500/30 text-zinc-100'}`}>
+                        {m.text}
+                        {m.links && m.links.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {m.links.map((link, i) => (
+                              <a key={i} href={link.uri} target="_blank" rel="noopener noreferrer" className="block text-violet-300 hover:text-violet-200 text-[10px] flex items-center gap-1"><ExternalLink size={10} /> {link.title}</a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
-                {isAiLoading && <div className="flex justify-start"><div className="bg-violet-600/20 border border-violet-500/30 rounded-xl px-3 py-2"><Loader2 size={16} className="animate-spin text-violet-500" /></div></div>}
+                  ))}
+                  {isAiLoading && <div className="flex justify-start"><div className="bg-violet-600/20 border border-violet-500/30 rounded-xl px-3 py-2"><Loader2 size={16} className="animate-spin text-violet-500" /></div></div>}
+                </div>}
               </div>
               <div className="p-3 border-t border-zinc-800/50 bg-zinc-950/50">
                 <div className="relative">
