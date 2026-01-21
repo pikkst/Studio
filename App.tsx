@@ -59,6 +59,8 @@ const App: React.FC = () => {
   const timelineContentRef = useRef<HTMLDivElement>(null);
   const rulerScrollRef = useRef<HTMLDivElement>(null);
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioNodesRef = useRef<Map<string, { source: AudioBufferSourceNode | null, gainNode: GainNode, buffer: AudioBuffer, startedAt: number }>>(new Map());
   const playheadIntervalRef = useRef<number | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -433,49 +435,55 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Initialize Web Audio Context
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    
     const audioItems = project.timeline.flatMap(t => t.items).filter(item => {
       const asset = project.assets.find(a => a.id === item.assetId);
       return asset?.type === 'audio';
     });
     const itemIds = new Set(audioItems.map(i => i.id));
     
-    // Remove old audio elements
-    for (const id of audioElementsRef.current.keys()) {
+    // Remove old audio nodes
+    for (const id of audioNodesRef.current.keys()) {
       if (!itemIds.has(id)) {
-        const audio = audioElementsRef.current.get(id);
-        if (audio) {
-          audio.pause();
-          audio.currentTime = 0;
-          audio.src = "";
-          audio.load();
-          audio.remove?.();
+        const node = audioNodesRef.current.get(id);
+        if (node?.source) {
+          node.source.stop();
+          node.source.disconnect();
+          node.gainNode.disconnect();
         }
-        audioElementsRef.current.delete(id);
+        audioNodesRef.current.delete(id);
       }
     }
     
-    // Create new audio elements with full pre-buffering
-    audioItems.forEach(item => {
-      if (!audioElementsRef.current.has(item.id)) {
+    // Load new audio buffers
+    audioItems.forEach(async (item) => {
+      if (!audioNodesRef.current.has(item.id)) {
         const asset = project.assets.find(a => a.id === item.assetId);
-        if (asset) {
-          const audio = new Audio(asset.url);
-          audio.preload = "auto"; // Full pre-buffering
-          audio.volume = 0;
-          
-          // Wait for full load before allowing playback
-          audio.onloadeddata = () => {
-            console.log('Audio fully buffered:', asset.name);
-          };
-          
-          audio.onwaiting = () => setIsBuffering(true);
-          audio.oncanplaythrough = () => setIsBuffering(false);
-          audio.onerror = (e) => console.error('Audio load error:', e);
-          
-          audioElementsRef.current.set(item.id, audio);
-          
-          // Force immediate load
-          audio.load();
+        if (asset && audioContextRef.current) {
+          try {
+            const response = await fetch(asset.url);
+            const arrayBuffer = await response.arrayBuffer();
+            const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
+            
+            const gainNode = audioContextRef.current.createGain();
+            gainNode.connect(audioContextRef.current.destination);
+            gainNode.gain.value = 0;
+            
+            audioNodesRef.current.set(item.id, {
+              source: null,
+              gainNode,
+              buffer: audioBuffer,
+              startedAt: 0
+            });
+            
+            console.log('Audio buffer loaded:', asset.name);
+          } catch (error) {
+            console.error('Failed to load audio:', asset.name, error);
+          }
         }
       }
     });
@@ -483,7 +491,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const syncAudio = () => {
-      audioElementsRef.current.forEach((audio, itemId) => {
+      if (!audioContextRef.current) return;
+      
+      audioNodesRef.current.forEach((node, itemId) => {
         let item: TimelineItem | undefined;
         let parentTrack;
         for (const track of project.timeline) {
@@ -501,48 +511,47 @@ const App: React.FC = () => {
         // Calculate target volume with fade-in/fade-out
         let targetVolume = 0;
         if (isInside) {
-          const fadeDuration = 0.05; // 50ms fade to prevent clicks
+          const fadeDuration = 0.05;
           const baseVolume = parentTrack.volume * (item.volume !== undefined ? item.volume : 1);
           
-          // Fade in at start
           if (itemTime < fadeDuration) {
             targetVolume = baseVolume * (itemTime / fadeDuration);
-          }
-          // Fade out at end
-          else if (itemTime > item.duration - fadeDuration) {
+          } else if (itemTime > item.duration - fadeDuration) {
             const fadeProgress = (item.duration - itemTime) / fadeDuration;
             targetVolume = baseVolume * fadeProgress;
-          }
-          // Full volume in middle
-          else {
+          } else {
             targetVolume = baseVolume;
           }
         }
         
-        // Smooth volume transitions
-        if (Math.abs(audio.volume - targetVolume) > 0.01) {
-          audio.volume = audio.volume + (targetVolume - audio.volume) * 0.3;
+        // Smooth volume transitions with Web Audio API
+        const currentGain = node.gainNode.gain.value;
+        if (Math.abs(currentGain - targetVolume) > 0.01) {
+          node.gainNode.gain.setValueAtTime(currentGain + (targetVolume - currentGain) * 0.3, audioContextRef.current.currentTime);
         } else {
-          audio.volume = targetVolume;
+          node.gainNode.gain.setValueAtTime(targetVolume, audioContextRef.current.currentTime);
         }
         
         if (isPlaying && isInside) {
-          const targetTime = currentTime - item.startTime;
-          
-          // Only adjust time if significantly out of sync
-          if (Math.abs(audio.currentTime - targetTime) > 0.5) {
-            audio.currentTime = targetTime;
-          }
-          
-          // Only call play() once when starting
-          if (audio.paused) {
-            audio.play().catch(e => console.warn("Playback prevented", e));
+          // Start audio source if not playing
+          if (!node.source) {
+            const source = audioContextRef.current.createBufferSource();
+            source.buffer = node.buffer;
+            source.connect(node.gainNode);
+            source.start(0, itemTime);
+            node.source = source;
+            node.startedAt = audioContextRef.current.currentTime - itemTime;
           }
         } else {
-          // Pause immediately when out of range
-          if (!audio.paused) {
-            audio.pause();
-            audio.currentTime = 0;
+          // Stop audio source when out of range
+          if (node.source) {
+            try {
+              node.source.stop();
+              node.source.disconnect();
+            } catch (e) {
+              // Already stopped
+            }
+            node.source = null;
           }
         }
       });
