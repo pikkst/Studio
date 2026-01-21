@@ -192,14 +192,53 @@ const App: React.FC = () => {
       switch (action) {
         case 'AUTO_SUBTITLE': {
           setMessages(m => [...m, { role: 'user', text: 'Generate auto-subtitles...' }]);
-          // Find audio tracks with content
           const audioTracks = project.timeline.filter(t => t.type === 'audio' && t.items.length > 0);
           if (audioTracks.length === 0) {
             setMessages(m => [...m, { role: 'ai', text: '⚠️ No audio tracks found. Add audio first to generate subtitles.' }]);
             break;
           }
-          const result = await geminiService.analyzeTimeline(timelineData);
-          setMessages(m => [...m, { role: 'ai', text: `📝 Auto-Subtitle Analysis:\n\n${result}\n\n💡 To implement: Add text items to timeline based on audio transcription timestamps.` }]);
+          
+          // Mock subtitle generation - in real app would use speech-to-text API
+          const subtitles = [
+            { text: 'Welcome to the video', start: 0, duration: 3 },
+            { text: 'This is an example subtitle', start: 3.5, duration: 3 },
+            { text: 'More content coming soon', start: 7, duration: 3 }
+          ];
+          
+          // Add subtitles to text track
+          const textTrack = project.timeline.find(t => t.type === 'text');
+          if (textTrack) {
+            const newSubtitles = subtitles.map(sub => {
+              const asset: Asset = {
+                id: Math.random().toString(36).substr(2, 9),
+                name: 'Subtitle',
+                type: 'text',
+                url: '',
+                textContent: sub.text,
+                textStyle: { fontSize: 24, fontFamily: 'Arial', color: '#FFFFFF', align: 'center', bold: false, italic: false }
+              };
+              setProject(prev => ({ ...prev, assets: [...prev.assets, asset] }));
+              
+              return {
+                id: Math.random().toString(36).substr(2, 9),
+                assetId: asset.id,
+                startTime: sub.start,
+                duration: sub.duration,
+                layer: 0
+              } as TimelineItem;
+            });
+            
+            setProject(prev => ({
+              ...prev,
+              timeline: prev.timeline.map(track => 
+                track.id === textTrack.id 
+                  ? { ...track, items: [...track.items, ...newSubtitles] }
+                  : track
+              )
+            }));
+          }
+          
+          setMessages(m => [...m, { role: 'ai', text: `📝 Generated ${subtitles.length} subtitles and added to timeline!\n\n💡 In production: Would use speech-to-text API for real transcription.` }]);
           break;
         }
 
@@ -217,16 +256,130 @@ const App: React.FC = () => {
             setMessages(m => [...m, { role: 'ai', text: '✂️ No obvious cut points found. Your timeline pacing looks good!' }]);
           } else {
             const cutText = cuts.map((c: any, i: number) => `${i+1}. ${c.time.toFixed(1)}s - ${c.reason} (${c.action})`).join('\n');
-            setMessages(m => [...m, { role: 'ai', text: `✂️ Smart Cut Suggestions:\n\n${cutText}\n\n💡 Click timeline at these points to split clips.` }]);
+            
+            // Ask if user wants to apply cuts automatically
+            const shouldApply = confirm(`Found ${cuts.length} cut suggestions.\n\n${cutText}\n\nApply these cuts automatically?`);
+            
+            if (shouldApply) {
+              // Apply cuts by splitting items at suggested times
+              setProject(prev => {
+                const newTimeline = [...prev.timeline];
+                cuts.forEach((cut: any) => {
+                  newTimeline.forEach(track => {
+                    track.items.forEach((item, idx) => {
+                      if (cut.time > item.startTime && cut.time < item.startTime + item.duration) {
+                        // Split this item
+                        const firstPart = { ...item, duration: cut.time - item.startTime };
+                        const secondPart = {
+                          ...item,
+                          id: Math.random().toString(36).substr(2, 9),
+                          startTime: cut.time,
+                          duration: item.startTime + item.duration - cut.time
+                        };
+                        track.items.splice(idx, 1, firstPart, secondPart);
+                      }
+                    });
+                  });
+                });
+                return { ...prev, timeline: newTimeline };
+              });
+              setMessages(m => [...m, { role: 'ai', text: `✂️ Applied ${cuts.length} smart cuts to timeline!\n\n${cutText}` }]);
+            } else {
+              setMessages(m => [...m, { role: 'ai', text: `✂️ Smart Cut Suggestions:\n\n${cutText}\n\n💡 Click timeline at these points to manually split clips.` }]);
+            }
           }
           break;
         }
 
         case 'NARRATION': {
           const style = params?.style || 'professional';
-          setMessages(m => [...m, { role: 'user', text: `Generate ${style} narration script...` }]);
+          setMessages(m => [...m, { role: 'user', text: `Generate ${style} narration and audio...` }]);
+          
           const script = await geminiService.generateNarrationScript(timelineData, style);
-          setMessages(m => [...m, { role: 'ai', text: `🎙️ Narration Script:\n\n${script}\n\n💡 Use Speech Gen mode to convert this to audio.` }]);
+          setMessages(m => [...m, { role: 'ai', text: `🎙️ Script generated! Creating audio...` }]);
+          
+          // Generate audio from script using TTS
+          if (userGeminiKey) {
+            try {
+              const audioUrl = await geminiService.generateNarration(script, userGeminiKey);
+              if (audioUrl) {
+                const asset: Asset = {
+                  id: Math.random().toString(36).substr(2, 9),
+                  name: 'AI Narration',
+                  type: 'audio',
+                  url: audioUrl,
+                  duration: 10 // Estimate, would be calculated from actual audio
+                };
+                setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+                
+                // Add to voiceover track
+                const voiceTrack = project.timeline.find(t => t.name === 'Voiceover');
+                if (voiceTrack) {
+                  const newItem: TimelineItem = {
+                    id: Math.random().toString(36).substr(2, 9),
+                    assetId: asset.id,
+                    startTime: 0,
+                    duration: asset.duration || 10,
+                    layer: 0
+                  };
+                  setProject(prev => ({
+                    ...prev,
+                    timeline: prev.timeline.map(track =>
+                      track.id === voiceTrack.id
+                        ? { ...track, items: [...track.items, newItem] }
+                        : track
+                    )
+                  }));
+                }
+                
+                setMessages(m => [...m, { role: 'ai', text: `✅ Narration created and added to timeline!\n\n📝 Script:\n${script.substring(0, 200)}...` }]);
+              }
+            } catch (err) {
+              setMessages(m => [...m, { role: 'ai', text: `❌ TTS failed. Here's the script:\n\n${script}` }]);
+            }
+          } else {
+            setMessages(m => [...m, { role: 'ai', text: `🎙️ Script:\n\n${script}\n\n⚠️ Set Gemini API key to generate audio.` }]);
+          }
+          break;
+        }
+
+        case 'AUTO_TRANSITIONS': {
+          setMessages(m => [...m, { role: 'user', text: 'Suggest transitions...' }]);
+          const suggestions = await geminiService.suggestTransitions(timelineData, userGeminiKey);
+          
+          if (suggestions.length === 0) {
+            setMessages(m => [...m, { role: 'ai', text: '⚡ No transition suggestions. Your cuts look smooth already!' }]);
+            break;
+          }
+          
+          const transText = suggestions.map((s: any, i: number) => 
+            `${i+1}. ${s.transitionType} - ${s.reason}`
+          ).join('\n');
+          
+          const shouldApply = confirm(`Found ${suggestions.length} transition suggestions.\n\n${transText}\n\nApply automatically?`);
+          
+          if (shouldApply) {
+            setProject(prev => ({
+              ...prev,
+              timeline: prev.timeline.map(track => ({
+                ...track,
+                items: track.items.map(item => {
+                  const suggestion = suggestions.find((s: any) => s.itemId === item.id);
+                  if (suggestion) {
+                    return {
+                      ...item,
+                      transitionIn: suggestion.transitionType,
+                      transitionInDuration: 0.5
+                    };
+                  }
+                  return item;
+                })
+              }))
+            }));
+            setMessages(m => [...m, { role: 'ai', text: `⚡ Applied ${suggestions.length} transitions!\n\n${transText}` }]);
+          } else {
+            setMessages(m => [...m, { role: 'ai', text: `⚡ Transition Suggestions:\n\n${transText}` }]);
+          }
           break;
         }
 
@@ -333,13 +486,18 @@ const App: React.FC = () => {
         if (!item || !parentTrack) return;
         
         const isInside = currentTime >= item.startTime && currentTime < (item.startTime + item.duration);
-        audio.volume = parentTrack.volume;
+        const targetVolume = isInside ? (parentTrack.volume * (item.volume !== undefined ? item.volume : 1)) : 0;
+        
+        // Smooth volume transitions to prevent clicks
+        if (Math.abs(audio.volume - targetVolume) > 0.01) {
+          audio.volume = audio.volume + (targetVolume - audio.volume) * 0.3;
+        }
         
         if (isPlaying && isInside) {
           const targetTime = currentTime - item.startTime;
           
-          // Only adjust time if significantly out of sync
-          if (Math.abs(audio.currentTime - targetTime) > 0.3) {
+          // Only adjust time if significantly out of sync (increased tolerance)
+          if (Math.abs(audio.currentTime - targetTime) > 0.5) {
             audio.currentTime = targetTime;
           }
           

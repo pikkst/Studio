@@ -234,5 +234,42 @@ Format: "✓ [Tip]" one per line, max 15 words each.`;
       contents: prompt,
     });
     return response.text;
+  },
+
+  /**
+   * Suggest transitions between clips
+   */
+  async suggestTransitions(timelineData: any, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
+    
+    const prompt = `Analyze this timeline and suggest where to add transitions:
+
+${JSON.stringify(timelineData, null, 2)}
+
+Return JSON array:
+[
+  { "itemId": "abc123", "transitionType": "fade", "reason": "Scene change" },
+  { "itemId": "xyz789", "transitionType": "dissolve", "reason": "Time passage" }
+]
+
+Suggest fade/dissolve transitions where they improve flow. Max 5 suggestions.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+    });
+    
+    try {
+      const text = response.text;
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse transition suggestions:', e);
+    }
+    return [];
   }
 };

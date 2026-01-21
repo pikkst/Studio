@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, Wand2, FileText, Scissors, MessageSquare, Loader2 } from 'lucide-react';
+import { Sparkles, Wand2, FileText, Scissors, MessageSquare, Loader2, Zap } from 'lucide-react';
 
 interface SmartAIPanelProps {
   onAction: (action: string, params?: any) => void;
@@ -41,15 +41,20 @@ export const SmartAIPanel: React.FC<SmartAIPanelProps> = ({ onAction, isLoading,
       action: () => onAction('SMART_EDIT')
     },
     {
+      id: 'transitions',
+      icon: Zap,
+      label: 'Auto Transitions',
+      description: 'Add smooth transitions',
+      color: 'cyan',
+      action: () => onAction('AUTO_TRANSITIONS')
+    },
+    {
       id: 'narration',
       icon: MessageSquare,
       label: 'Generate Narration',
       description: 'Create voiceover script',
       color: 'green',
-      action: () => {
-        const script = prompt('Enter narration script:');
-        if (script) onAction('NARRATION', { text: script });
-      }
+      action: () => onAction('NARRATION', { style: 'professional' })
     }
   ];
 
