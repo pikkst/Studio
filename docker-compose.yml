@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # FFmpeg service for video processing
+  ffmpeg:
+    image: jrottenberg/ffmpeg:latest
+    container_name: studio-ffmpeg
+    volumes:
+      - ./tmp:/tmp
+      - ./exports:/exports
+    command: tail -f /dev/null  # Keep container running
+    restart: unless-stopped
+
+  # Optional: Local Supabase for development
+  # Uncomment if you want to run Supabase locally
+  # supabase:
+  #   image: supabase/postgres:15.1.0.117
+  #   container_name: studio-supabase
+  #   ports:
+  #     - "5432:5432"
+  #   environment:
+  #     POSTGRES_PASSWORD: postgres
+  #   volumes:
+  #     - supabase-data:/var/lib/postgresql/data
+
+# volumes:
+#   supabase-data:

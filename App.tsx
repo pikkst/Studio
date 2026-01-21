@@ -949,21 +949,83 @@ const App: React.FC = () => {
         setMessages(prev => [...prev, { role: 'ai', text: response || "" }]);
       } else if (aiMode === AIServiceMode.IMAGE_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "🎨 Generating image..." }]);
-        const url = await geminiService.generateImage(prompt, userGeminiKey);
-        const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
-        setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
-        setMessages(prev => [...prev, { role: 'ai', text: "✅ Image generated! Added to your library." }]);
+        const imageUrl = await geminiService.generateImage(prompt, userGeminiKey);
+        
+        // Download image and convert to blob for upload
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const fileName = `ai-generated-${Date.now()}.png`;
+        const file = new File([blob], fileName, { type: 'image/png' });
+        
+        // Upload to Supabase Storage if user is logged in
+        if (user) {
+          const storedAsset = await supabaseService.uploadMedia(file, user.id, project.id);
+          const asset: Asset = { 
+            id: storedAsset.id, 
+            name: 'AI Generated Image', 
+            type: 'image', 
+            url: storedAsset.url, 
+            thumbnail: storedAsset.thumbnail_url || storedAsset.url, 
+            duration: 5 
+          };
+          setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+          setMessages(prev => [...prev, { role: 'ai', text: "✅ Image generated and saved! Added to your library." }]);
+        } else {
+          // Fallback for non-logged in users (temporary)
+          const asset: Asset = { 
+            id: Math.random().toString(36).substr(2, 9), 
+            name: 'AI Generated Image', 
+            type: 'image', 
+            url: imageUrl, 
+            thumbnail: imageUrl, 
+            duration: 5 
+          };
+          setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+          setMessages(prev => [...prev, { role: 'ai', text: "✅ Image generated! (Login to save permanently)" }]);
+        }
       } else if (aiMode === AIServiceMode.SPEECH_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating speech..." }]);
-        const url = await geminiService.generateNarration(prompt, userGeminiKey);
-        if (url) {
-          const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Narration', type: 'audio', url, duration: 5 };
-          setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
-          setMessages(prev => [...prev, { role: 'ai', text: "Speech generated! Check audio in library." }]);
+        const audioUrl = await geminiService.generateNarration(prompt, userGeminiKey);
+        if (audioUrl) {
+          // Download audio and convert to blob for upload
+          const response = await fetch(audioUrl);
+          const blob = await response.blob();
+          const fileName = `ai-narration-${Date.now()}.mp3`;
+          const file = new File([blob], fileName, { type: 'audio/mpeg' });
+          
+          // Upload to Supabase Storage if user is logged in
+          if (user) {
+            const storedAsset = await supabaseService.uploadMedia(file, user.id, project.id);
+            const asset: Asset = { 
+              id: storedAsset.id, 
+              name: 'AI Narration', 
+              type: 'audio', 
+              url: storedAsset.url, 
+              duration: storedAsset.duration || 5 
+            };
+            setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+            setMessages(prev => [...prev, { role: 'ai', text: "✅ Speech generated and saved! Check audio in library." }]);
+          } else {
+            // Fallback for non-logged in users
+            const asset: Asset = { 
+              id: Math.random().toString(36).substr(2, 9), 
+              name: 'AI Narration', 
+              type: 'audio', 
+              url: audioUrl, 
+              duration: 5 
+            };
+            setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+            setMessages(prev => [...prev, { role: 'ai', text: "Speech generated! (Login to save permanently)" }]);
+          }
         }
       } else if (aiMode === AIServiceMode.SEARCH) {
         const result = await geminiService.searchMediaReferences(prompt, userGeminiKey);
         setMessages(prev => [...prev, { role: 'ai', text: result.text, links: result.links }]);
+      }
+      
+      // Auto-save project after AI generates media
+      if (user && (aiMode === AIServiceMode.IMAGE_GEN || aiMode === AIServiceMode.SPEECH_GEN)) {
+        setTimeout(() => handleSaveProject(), 1000);
       }
     } catch (e) {
       const errorMsg = (e as Error).message;
@@ -1276,6 +1338,7 @@ const App: React.FC = () => {
         project={project}
         isOpen={isExportOpen}
         onClose={() => setIsExportOpen(false)}
+        userId={user?.id || ''}
       />
 
       {/* Toast Notifications */}

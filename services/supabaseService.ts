@@ -338,5 +338,131 @@ export const supabaseService = {
       video.onerror = reject;
       video.src = URL.createObjectURL(videoFile);
     });
+  },
+
+  // ==================== VIDEO EXPORT ====================
+  
+  /**
+   * Create export job for backend processing
+   */
+  async createExportJob(
+    projectId: string, 
+    userId: string, 
+    format: 'mp4' | 'webm' = 'mp4',
+    quality: 'low' | 'medium' | 'high' = 'high'
+  ): Promise<{ id: string }> {
+    const { data, error } = await supabase
+      .from('export_jobs')
+      .insert({
+        project_id: projectId,
+        user_id: userId,
+        format,
+        quality,
+        status: 'pending'
+      })
+      .select('id')
+      .single();
+
+    if (error) throw error;
+
+    // Trigger Edge Function to process export
+    const { error: functionError } = await supabase.functions.invoke('export-video', {
+      body: { jobId: data.id }
+    });
+
+    if (functionError) {
+      // Update job status to failed
+      await supabase
+        .from('export_jobs')
+        .update({ 
+          status: 'failed', 
+          error_message: functionError.message 
+        })
+        .eq('id', data.id);
+      
+      throw functionError;
+    }
+
+    return data;
+  },
+
+  /**
+   * Get export job status
+   */
+  async getExportJob(jobId: string, userId: string): Promise<any> {
+    const { data, error } = await supabase
+      .from('export_jobs')
+      .select('*')
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  /**
+   * List user's export jobs
+   */
+  async listExportJobs(userId: string, limit: number = 10): Promise<any[]> {
+    const { data, error } = await supabase
+      .from('export_jobs')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  /**
+   * Subscribe to export job updates
+   */
+  subscribeToExportJob(jobId: string, callback: (job: any) => void) {
+    return supabase
+      .channel(`export_job_${jobId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'export_jobs',
+          filter: `id=eq.${jobId}`
+        },
+        (payload) => callback(payload.new)
+      )
+      .subscribe();
+  },
+
+  /**
+   * Delete export job
+   */
+  async deleteExportJob(jobId: string, userId: string) {
+    // Get job info to delete output file
+    const { data: job } = await supabase
+      .from('export_jobs')
+      .select('output_url')
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+
+    if (job?.output_url) {
+      const urlParts = job.output_url.split('/exports/');
+      if (urlParts[1]) {
+        await supabase.storage
+          .from('exports')
+          .remove([urlParts[1]]);
+      }
+    }
+
+    // Delete from database
+    const { error } = await supabase
+      .from('export_jobs')
+      .delete()
+      .eq('id', jobId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
   }
 };
