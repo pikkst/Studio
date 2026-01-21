@@ -1,6 +1,7 @@
 /**
  * FFmpeg executor for Deno/Supabase Edge Functions
  * Supports both Docker and static binary execution
+ * Updated for Deno 2.x using Deno.Command API
  */
 
 export interface FFmpegOptions {
@@ -30,9 +31,8 @@ export async function executeFFmpegDocker(
   const ffmpegArgs = args.slice(ffmpegIndex + 1);
 
   try {
-    const process = Deno.run({
-      cmd: [
-        'docker',
+    const cmd = new Deno.Command('docker', {
+      args: [
         'run',
         '--rm',
         '-v', '/tmp:/tmp',
@@ -43,23 +43,25 @@ export async function executeFFmpegDocker(
       stderr: 'piped',
     });
 
+    const process = cmd.spawn();
+
     // Set timeout
-    const timeoutId = setTimeout(() => {
-      process.kill('SIGTERM');
-    }, timeout);
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        process.kill('SIGTERM');
+        reject(new Error('FFmpeg process timeout'));
+      }, timeout);
+    });
 
     // Read stderr for progress
     let stderrOutput = '';
     const decoder = new TextDecoder();
-    const stderrReader = process.stderr.readable.getReader();
 
-    (async () => {
+    // Read stderr stream
+    const stderrPromise = (async () => {
       try {
-        while (true) {
-          const { done, value } = await stderrReader.read();
-          if (done) break;
-
-          const text = decoder.decode(value);
+        for await (const chunk of process.stderr) {
+          const text = decoder.decode(chunk);
           stderrOutput += text;
 
           // Parse FFmpeg progress: time=00:00:05.23
@@ -88,8 +90,10 @@ export async function executeFFmpegDocker(
       }
     })();
 
-    const status = await process.status();
-    clearTimeout(timeoutId);
+    const [status] = await Promise.race([
+      Promise.all([process.status, stderrPromise]),
+      timeoutPromise
+    ]) as [Deno.CommandStatus, void];
 
     if (status.success) {
       // Find output file from command
@@ -132,29 +136,31 @@ export async function executeFFmpegBinary(
     const ffmpegIndex = args.findIndex(arg => arg.includes('ffmpeg'));
     const ffmpegArgs = args.slice(ffmpegIndex + 1);
 
-    const process = Deno.run({
-      cmd: [ffmpegPath, ...ffmpegArgs],
+    const cmd = new Deno.Command(ffmpegPath, {
+      args: ffmpegArgs,
       stdout: 'piped',
       stderr: 'piped',
     });
 
+    const process = cmd.spawn();
+
     // Set timeout
-    const timeoutId = setTimeout(() => {
-      process.kill('SIGTERM');
-    }, timeout);
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        process.kill('SIGTERM');
+        reject(new Error('FFmpeg process timeout'));
+      }, timeout);
+    });
 
     // Read stderr for progress
     let stderrOutput = '';
     const decoder = new TextDecoder();
-    const stderrReader = process.stderr.readable.getReader();
 
-    (async () => {
+    // Read stderr stream
+    const stderrPromise = (async () => {
       try {
-        while (true) {
-          const { done, value } = await stderrReader.read();
-          if (done) break;
-
-          const text = decoder.decode(value);
+        for await (const chunk of process.stderr) {
+          const text = decoder.decode(chunk);
           stderrOutput += text;
 
           // Parse progress
@@ -182,8 +188,10 @@ export async function executeFFmpegBinary(
       }
     })();
 
-    const status = await process.status();
-    clearTimeout(timeoutId);
+    const [status] = await Promise.race([
+      Promise.all([process.status, stderrPromise]),
+      timeoutPromise
+    ]) as [Deno.CommandStatus, void];
 
     if (status.success) {
       const outputIndex = ffmpegArgs.findIndex(arg => arg.endsWith('.mp4') || arg.endsWith('.webm'));
