@@ -405,6 +405,9 @@ const App: React.FC = () => {
     if (!user) return;
     setIsUploading(true);
     try {
+      // Ensure project exists in Supabase before uploading assets
+      await supabaseService.saveProject(project, user.id);
+      
       const uploadPromises = Array.from(files).map(async (file: File) => {
         const storedAsset = await supabaseService.uploadMedia(file, user.id, project.id);
         return {
