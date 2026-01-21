@@ -14,11 +14,12 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({ currentTime, timeline,
   const imageElementsRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   useEffect(() => {
-    const videoTracks = timeline.filter(t => t.type === 'video');
-    const activeItems = videoTracks
+    // Get all visual tracks (video, text) - images go to video tracks
+    const visualTracks = timeline.filter(t => t.type === 'video' || t.type === 'text');
+    const activeItems = visualTracks
       .flatMap(track => track.items.map(item => ({ item, track })))
       .filter(({ item }) => currentTime >= item.startTime && currentTime < item.startTime + item.duration)
-      .sort((a, b) => a.item.layer - b.item.layer);
+      .sort((a, b) => (a.item.layer || 0) - (b.item.layer || 0)); // Sort by layer
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -93,12 +94,30 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({ currentTime, timeline,
         let img = imageElementsRef.current.get(item.id);
         if (!img) {
           img = new Image();
+          img.crossOrigin = 'anonymous'; // CORS support
+          img.onload = () => {
+            // Force re-render when image loads
+            if (canvasRef.current) {
+              const ctx = canvasRef.current.getContext('2d');
+              if (ctx && img && img.complete) {
+                ctx.drawImage(img, 0, 0, canvasRef.current.width, canvasRef.current.height);
+              }
+            }
+          };
           img.src = asset.url;
           imageElementsRef.current.set(item.id, img);
         }
 
-        if (img.complete) {
+        if (img.complete && img.naturalWidth > 0) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        } else {
+          // Show placeholder while loading
+          ctx.fillStyle = '#18181b';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#52525b';
+          ctx.font = '24px Inter';
+          ctx.textAlign = 'center';
+          ctx.fillText('Loading image...', canvas.width / 2, canvas.height / 2);
         }
       } else if (asset.type === 'text' && asset.textContent) {
         const style = asset.textStyle || {

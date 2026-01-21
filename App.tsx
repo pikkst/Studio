@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music, Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink, ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock, Save, FolderOpen, LogOut, Settings, Download, Type } from 'lucide-react';
+import { Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music, Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink, ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock, Save, FolderOpen, LogOut, Settings, Download, Type, Undo2, Redo2, Copy, Clipboard, Gauge, Grid3x3, Magnet } from 'lucide-react';
 import { Asset, ProjectState, AIServiceMode, TimelineItem } from './types';
 import { geminiService } from './services/geminiService';
 import { supabaseService } from './services/supabaseService';
@@ -48,6 +48,10 @@ const App: React.FC = () => {
   const [resizingItem, setResizingItem] = useState<{itemId: string, side: 'start' | 'end', initialX: number, initialStart: number, initialDuration: number} | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
+  const [history, setHistory] = useState<ProjectState[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [copiedItem, setCopiedItem] = useState<TimelineItem | null>(null);
+  const [snapToGrid, setSnapToGrid] = useState(true);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [userGeminiKey, setUserGeminiKey] = useState(() => {
@@ -120,6 +124,36 @@ const App: React.FC = () => {
         handleDelete();
       }
       
+      // Ctrl+Z - undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+      
+      // Ctrl+Shift+Z or Ctrl+Y - redo
+      if (((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) || ((e.ctrlKey || e.metaKey) && e.key === 'y')) {
+        e.preventDefault();
+        handleRedo();
+      }
+      
+      // Ctrl+C - copy
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c' && selectedItemId && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        handleCopy();
+      }
+      
+      // Ctrl+V - paste
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v' && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        handlePaste();
+      }
+      
+      // Ctrl+D - duplicate
+      if ((e.ctrlKey || e.metaKey) && e.key === 'd' && selectedItemId && !(e.target as HTMLElement).matches('input, textarea')) {
+        e.preventDefault();
+        handleDuplicate();
+      }
+      
       // Ctrl+S - save project
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
@@ -130,6 +164,12 @@ const App: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
         e.preventDefault();
         setIsExportOpen(true);
+      }
+      
+      // S - split at playhead
+      if (e.key === 's' && selectedItemId && !(e.target as HTMLElement).matches('input, textarea') && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        handleSplit();
       }
       
       // Arrow keys - nudge playhead
@@ -729,6 +769,7 @@ const App: React.FC = () => {
 
   const handleUpdateItem = (updates: Partial<TimelineItem>) => {
     if (!selectedItemId) return;
+    saveToHistory();
     setProject(prev => ({
       ...prev,
       timeline: prev.timeline.map(track => ({
@@ -738,6 +779,91 @@ const App: React.FC = () => {
         )
       }))
     }));
+  };
+
+  const saveToHistory = () => {
+    setHistory(prev => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      return [...newHistory, JSON.parse(JSON.stringify(project))];
+    });
+    setHistoryIndex(prev => prev + 1);
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      setHistoryIndex(prev => prev - 1);
+      setProject(JSON.parse(JSON.stringify(history[historyIndex - 1])));
+      setToast({ message: 'Undo', type: 'success' });
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      setHistoryIndex(prev => prev + 1);
+      setProject(JSON.parse(JSON.stringify(history[historyIndex + 1])));
+      setToast({ message: 'Redo', type: 'success' });
+    }
+  };
+
+  const handleCopy = () => {
+    if (!selectedItemId) return;
+    const item = project.timeline.flatMap(t => t.items).find(i => i.id === selectedItemId);
+    if (item) {
+      setCopiedItem(JSON.parse(JSON.stringify(item)));
+      setToast({ message: 'Copied', type: 'success' });
+    }
+  };
+
+  const handlePaste = () => {
+    if (!copiedItem) return;
+    saveToHistory();
+    const newItem = {
+      ...copiedItem,
+      id: Math.random().toString(36).substr(2, 9),
+      startTime: currentTime
+    };
+    
+    // Find appropriate track
+    const asset = project.assets.find(a => a.id === copiedItem.assetId);
+    const trackId = project.timeline.find(t => 
+      (asset?.type === 'audio' && t.type === 'audio') || 
+      (asset?.type === 'text' && t.type === 'text') ||
+      (asset?.type !== 'audio' && asset?.type !== 'text' && t.type === 'video')
+    )?.id || 'v1';
+    
+    setProject(prev => ({
+      ...prev,
+      timeline: prev.timeline.map(track =>
+        track.id === trackId ? { ...track, items: [...track.items, newItem] } : track
+      )
+    }));
+    setSelectedItemId(newItem.id);
+    setToast({ message: 'Pasted', type: 'success' });
+  };
+
+  const handleDuplicate = () => {
+    if (!selectedItemId) return;
+    const item = project.timeline.flatMap(t => t.items).find(i => i.id === selectedItemId);
+    if (!item) return;
+    
+    saveToHistory();
+    const newItem = {
+      ...item,
+      id: Math.random().toString(36).substr(2, 9),
+      startTime: item.startTime + item.duration
+    };
+    
+    setProject(prev => ({
+      ...prev,
+      timeline: prev.timeline.map(track => ({
+        ...track,
+        items: track.items.find(i => i.id === item.id) 
+          ? [...track.items, newItem]
+          : track.items
+      }))
+    }));
+    setSelectedItemId(newItem.id);
+    setToast({ message: 'Duplicated', type: 'success' });
   };
 
   const handleSplit = () => {
@@ -1011,19 +1137,58 @@ const App: React.FC = () => {
 
       <div className="h-80 border-t border-zinc-800/50 glass flex z-10 select-none overflow-hidden">
         <div className="flex-1 flex flex-col min-w-0">
-          <div className="h-10 border-b border-zinc-800/50 flex items-center px-4 bg-zinc-900/50 gap-4 shrink-0">
-            <div className="flex items-center gap-1 border-r border-zinc-800 pr-4">
-              <button onClick={handleSplit} disabled={!selectedItemId} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors flex items-center gap-2 text-[10px] font-bold uppercase"><Scissors size={14} /> Split</button>
-              <button onClick={handleDelete} disabled={!selectedItemId} className="p-1.5 hover:bg-red-900/40 text-red-400 hover:text-red-300 rounded disabled:opacity-30 transition-colors flex items-center gap-2 text-[10px] font-bold uppercase"><Trash2 size={14} /> Delete</button>
+          <div className="h-10 border-b border-zinc-800/50 flex items-center px-4 bg-zinc-900/50 gap-2 shrink-0 overflow-x-auto">
+            {/* Edit Tools */}
+            <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
+              <button onClick={handleUndo} disabled={historyIndex <= 0} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors" title="Undo (Ctrl+Z)">
+                <Undo2 size={14} />
+              </button>
+              <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors" title="Redo (Ctrl+Shift+Z)">
+                <Redo2 size={14} />
+              </button>
             </div>
-            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2 flex items-center gap-2"><Layers size={14}/> Timeline Editor</div>
-            <div className="flex items-center gap-2 border-l border-zinc-800 pl-4">
+            
+            {/* Clipboard */}
+            <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
+              <button onClick={handleCopy} disabled={!selectedItemId} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors" title="Copy (Ctrl+C)">
+                <Copy size={14} />
+              </button>
+              <button onClick={handlePaste} disabled={!copiedItem} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors" title="Paste (Ctrl+V)">
+                <Clipboard size={14} />
+              </button>
+              <button onClick={handleDuplicate} disabled={!selectedItemId} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors text-[10px] font-bold uppercase" title="Duplicate (Ctrl+D)">
+                <Copy size={14} className="mr-1" /> D
+              </button>
+            </div>
+            
+            {/* Actions */}
+            <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
+              <button onClick={handleSplit} disabled={!selectedItemId} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-30 transition-colors flex items-center gap-1" title="Split (S)">
+                <Scissors size={14} />
+              </button>
+              <button onClick={handleDelete} disabled={!selectedItemId} className="p-1.5 hover:bg-red-900/40 text-red-400 hover:text-red-300 rounded disabled:opacity-30 transition-colors" title="Delete (Del)">
+                <Trash2 size={14} />
+              </button>
+            </div>
+            
+            {/* Settings */}
+            <div className="flex items-center gap-2 border-r border-zinc-800 pr-2">
+              <button onClick={() => setSnapToGrid(!snapToGrid)} className={`p-1.5 rounded transition-colors ${snapToGrid ? 'bg-violet-600/20 text-violet-400' : 'hover:bg-zinc-800'}`} title="Snap to Grid">
+                <Magnet size={14} />
+              </button>
+            </div>
+            
+            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2 flex items-center gap-2"><Layers size={14}/> Timeline</div>
+            
+            {/* Zoom */}
+            <div className="flex items-center gap-2 ml-auto">
               <span className="text-[9px] text-zinc-500">Zoom:</span>
               <button onClick={() => setTimelineZoom(prev => Math.max(0.5, prev - 0.25))} className="px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 rounded transition-colors">−</button>
               <span className="text-[9px] text-zinc-400 font-mono w-12 text-center">{(timelineZoom * 100).toFixed(0)}%</span>
               <button onClick={() => setTimelineZoom(prev => Math.min(3, prev + 0.25))} className="px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 rounded transition-colors">+</button>
             </div>
-            {selectedItem && <div className="ml-auto text-[10px] text-violet-400 font-semibold">Item Selected →</div>}
+            
+            {selectedItem && <div className="text-[10px] text-violet-400 font-semibold border-l border-zinc-800 pl-2">Selected</div>}
           </div>
 
         <div className="h-8 border-b border-zinc-800/50 flex items-center bg-zinc-900/40 relative shrink-0">
