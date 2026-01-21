@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@google/genai": "^1.38.0",
     "@supabase/supabase-js": "^2.91.0",
     "lucide-react": "^0.562.0",

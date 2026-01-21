@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Loader2, X, Clock, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+import { Download, Loader2, X, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { ProjectState } from '../types';
-import { supabaseService } from '../services/supabaseService';
+import { ffmpegService } from '../services/ffmpegService';
 
 interface VideoExporterProps {
   project: ProjectState;
@@ -13,34 +13,11 @@ interface VideoExporterProps {
 export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, onClose, userId }) => {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState<'idle' | 'creating' | 'processing' | 'completed' | 'failed'>('idle');
+  const [status, setStatus] = useState<'idle' | 'loading' | 'processing' | 'completed' | 'failed'>('idle');
   const [format, setFormat] = useState<'mp4' | 'webm'>('mp4');
   const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('high');
-  const [jobId, setJobId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
-  const [outputUrl, setOutputUrl] = useState<string>('');
-
-  useEffect(() => {
-    if (!jobId || !isOpen) return;
-
-    // Subscribe to job updates
-    const subscription = supabaseService.subscribeToExportJob(jobId, (job) => {
-      setStatus(job.status);
-      setProgress(job.progress || 0);
-      
-      if (job.status === 'completed') {
-        setOutputUrl(job.output_url);
-        setIsExporting(false);
-      } else if (job.status === 'failed') {
-        setErrorMessage(job.error_message || 'Export failed');
-        setIsExporting(false);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [jobId, isOpen]);
+  const [outputBlob, setOutputBlob] = useState<Blob | null>(null);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -48,8 +25,7 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
       setStatus('idle');
       setProgress(0);
       setErrorMessage('');
-      setOutputUrl('');
-      setJobId(null);
+      setOutputBlob(null);
     }
   }, [isOpen]);
 
@@ -57,7 +33,7 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
 
   const handleExport = async () => {
     setIsExporting(true);
-    setStatus('creating');
+    setStatus('loading');
     setProgress(0);
     setErrorMessage('');
 
@@ -67,19 +43,26 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
         throw new Error('Project is empty. Add some media to the timeline first.');
       }
 
-      // First save the project to ensure latest data
-      await supabaseService.saveProject(project, userId);
+      // Load FFmpeg if not already loaded
+      if (!ffmpegService.isLoaded()) {
+        await ffmpegService.load((p) => setProgress(p * 0.2)); // 0-20%
+      }
 
-      // Create export job
-      const job = await supabaseService.createExportJob(
-        project.id,
-        userId,
+      setStatus('processing');
+      setProgress(20);
+
+      // Export video
+      const blob = await ffmpegService.exportVideo(
+        project,
         format,
-        quality
+        quality,
+        (p) => setProgress(20 + p * 0.75) // 20-95%
       );
 
-      setJobId(job.id);
-      setStatus('processing');
+      setOutputBlob(blob);
+      setStatus('completed');
+      setProgress(100);
+      setIsExporting(false);
     } catch (error) {
       console.error('Export failed:', error);
       setStatus('failed');
@@ -89,31 +72,20 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
   };
 
   const handleDownload = () => {
-    if (outputUrl) {
+    if (outputBlob) {
+      const url = URL.createObjectURL(outputBlob);
       const a = document.createElement('a');
-      a.href = outputUrl;
+      a.href = url;
       a.download = `${project.title}.${format}`;
       a.click();
-    }
-  };
-
-  const getStatusIcon = () => {
-    switch (status) {
-      case 'processing':
-        return <Loader2 size={20} className="text-violet-500 animate-spin" />;
-      case 'completed':
-        return <CheckCircle2 size={20} className="text-green-500" />;
-      case 'failed':
-        return <XCircle size={20} className="text-red-500" />;
-      default:
-        return <Clock size={20} className="text-zinc-500" />;
+      URL.revokeObjectURL(url);
     }
   };
 
   const getStatusText = () => {
     switch (status) {
-      case 'creating':
-        return 'Creating export job...';
+      case 'loading':
+        return 'Loading video processor...';
       case 'processing':
         return 'Processing video...';
       case 'completed':
@@ -148,9 +120,9 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
           <div className="flex items-start gap-3 p-3 bg-violet-950/30 border border-violet-900/50 rounded-lg">
             <AlertCircle size={16} className="text-violet-400 mt-0.5 flex-shrink-0" />
             <div>
-              <p className="text-xs font-medium text-violet-300">Server-Side Processing</p>
+              <p className="text-xs font-medium text-violet-300">Browser-Based Processing</p>
               <p className="text-xs text-violet-400/70 mt-1">
-                Your video will be rendered on our servers using FFmpeg with full support for transitions, effects, and high-quality encoding.
+                Your video will be processed directly in your browser using FFmpeg.wasm with full support for transitions, effects, and high-quality encoding. All processing happens locally - no uploads required!
               </p>
             </div>
           </div>
@@ -175,7 +147,7 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
           {isExporting && (
             <div className="space-y-3 p-4 bg-zinc-950 rounded-lg border border-zinc-800">
               <div className="flex items-center gap-3">
-                {getStatusIcon()}
+                <Loader2 size={20} className="text-violet-500 animate-spin" />
                 <div className="flex-1">
                   <p className="text-sm font-medium text-zinc-200">{getStatusText()}</p>
                   {status === 'processing' && (
@@ -199,7 +171,7 @@ export const VideoExporter: React.FC<VideoExporterProps> = ({ project, isOpen, o
             </div>
           )}
 
-          {status === 'completed' && outputUrl && (
+          {status === 'completed' && outputBlob && (
             <div className="p-4 bg-green-950/50 border border-green-900/50 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
                 <CheckCircle2 size={16} className="text-green-400" />
