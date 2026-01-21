@@ -19,8 +19,10 @@ export const geminiService = {
   /**
    * General AI Assistant Chat
    */
-  async askAssistant(prompt: string, context: string = "") {
-    const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+  async askAssistant(prompt: string, context: string = "", apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `Context: ${context}\n\nUser Question: ${prompt}`,
@@ -34,8 +36,10 @@ export const geminiService = {
   /**
    * Search for stock assets or references using Google Search Grounding
    */
-  async searchMediaReferences(query: string) {
-    const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+  async searchMediaReferences(query: string, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Find high-quality media references, stock footage descriptions, or free asset websites for: ${query}`,
@@ -59,8 +63,10 @@ export const geminiService = {
   /**
    * Generate Video using Veo
    */
-  async generateVideo(prompt: string, aspectRatio: '16:9' | '9:16' = '16:9') {
-    const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+  async generateVideo(prompt: string, apiKey?: string, aspectRatio: '16:9' | '9:16' = '16:9') {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
     let operation = await ai.models.generateVideos({
       model: 'veo-3.1-fast-generate-preview',
       prompt: prompt,
@@ -77,7 +83,7 @@ export const geminiService = {
     }
 
     const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    const response = await fetch(`${downloadLink}&key=${import.meta.env.VITE_GEMINI_API_KEY}`);
+    const response = await fetch(`${downloadLink}&key=${key}`);
     const blob = await response.blob();
     return URL.createObjectURL(blob);
   },
@@ -85,8 +91,10 @@ export const geminiService = {
   /**
    * Generate Image for assets
    */
-  async generateImage(prompt: string) {
-    const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+  async generateImage(prompt: string, apiKey?: string) {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: { parts: [{ text: prompt }] },
@@ -110,8 +118,10 @@ export const geminiService = {
   /**
    * Text to Speech Narration
    */
-  async generateNarration(text: string, voice: string = 'Kore') {
-    const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+  async generateNarration(text: string, apiKey?: string, voice: string = 'Kore') {
+    const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) throw new Error('Gemini API key is required');
+    const ai = new GoogleGenAI({ apiKey: key });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: `Say naturally: ${text}` }] }],

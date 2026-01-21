@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music, Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink, ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock, Save, FolderOpen, LogOut } from 'lucide-react';
+import { Plus, Play, Pause, SkipForward, SkipBack, Video, Image as ImageIcon, Music, Layers, Zap, Trash2, Sparkles, X, Send, Loader2, ExternalLink, ChevronLeft, Volume2, VolumeX, GripHorizontal, Scissors, Clock, Save, FolderOpen, LogOut, Settings } from 'lucide-react';
 import { Asset, ProjectState, AIServiceMode, TimelineItem } from './types';
 import { geminiService } from './services/geminiService';
 import { supabaseService } from './services/supabaseService';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { AuthScreen } from './components/AuthScreen';
 import { AudioWaveform } from './components/AudioWaveform';
+import { SettingsModal } from './components/SettingsModal';
+import { Toast } from './components/Toast';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<SupabaseUser | null>(null);
@@ -39,6 +41,12 @@ const App: React.FC = () => {
   const [draggingItem, setDraggingItem] = useState<{itemId: string, trackId: string} | null>(null);
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
   const [resizingItem, setResizingItem] = useState<{itemId: string, side: 'start' | 'end', initialX: number, initialStart: number, initialDuration: number} | null>(null);
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [userGeminiKey, setUserGeminiKey] = useState(() => {
+    return localStorage.getItem('gemini_api_key') || '';
+  });
+  const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'warning' | 'info'} | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const timelineContentRef = useRef<HTMLDivElement>(null);
@@ -350,43 +358,58 @@ const App: React.FC = () => {
 
   const handleAiAction = async () => {
     if (!aiInput.trim()) return;
+    
+    // Check if user has API key
+    if (!userGeminiKey) {
+      setToast({ message: 'Please set your Gemini API key in Settings first', type: 'warning' });
+      setIsSettingsOpen(true);
+      return;
+    }
+
     const prompt = aiInput;
     setAiInput('');
     setMessages(prev => [...prev, { role: 'user', text: prompt }]);
     setIsAiLoading(true);
     try {
       if (aiMode === AIServiceMode.CHAT) {
-        const response = await geminiService.askAssistant(prompt, `Project: ${project.title}, Assets: ${project.assets.length}`);
+        const response = await geminiService.askAssistant(prompt, `Project: ${project.title}, Assets: ${project.assets.length}`, userGeminiKey);
         setMessages(prev => [...prev, { role: 'ai', text: response || "" }]);
       } else if (aiMode === AIServiceMode.VIDEO_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating video... This may take a few minutes." }]);
-        const url = await geminiService.generateVideo(prompt);
+        const url = await geminiService.generateVideo(prompt, userGeminiKey);
         const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Video', type: 'video', url, duration: 5 };
         setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
         setMessages(prev => [...prev, { role: 'ai', text: "Video generated successfully! Check your media library." }]);
       } else if (aiMode === AIServiceMode.IMAGE_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating image..." }]);
-        const url = await geminiService.generateImage(prompt);
+        const url = await geminiService.generateImage(prompt, userGeminiKey);
         const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
         setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
         setMessages(prev => [...prev, { role: 'ai', text: "Image generated! Added to your library." }]);
       } else if (aiMode === AIServiceMode.SPEECH_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating speech..." }]);
-        const url = await geminiService.generateNarration(prompt);
+        const url = await geminiService.generateNarration(prompt, userGeminiKey);
         if (url) {
           const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Narration', type: 'audio', url, duration: 5 };
           setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
           setMessages(prev => [...prev, { role: 'ai', text: "Speech generated! Check audio in library." }]);
         }
       } else if (aiMode === AIServiceMode.SEARCH) {
-        const result = await geminiService.searchMediaReferences(prompt);
+        const result = await geminiService.searchMediaReferences(prompt, userGeminiKey);
         setMessages(prev => [...prev, { role: 'ai', text: result.text, links: result.links }]);
       }
     } catch (e) {
       setMessages(prev => [...prev, { role: 'ai', text: `Error: ${(e as Error).message}` }]);
+      setToast({ message: `AI Error: ${(e as Error).message}`, type: 'error' });
     } finally { 
       setIsAiLoading(false); 
     }
+  };
+
+  const handleSaveApiKey = (key: string) => {
+    localStorage.setItem('gemini_api_key', key);
+    setUserGeminiKey(key);
+    setToast({ message: 'API key saved successfully!', type: 'success' });
   };
 
   if (authLoading) {
@@ -408,6 +431,7 @@ const App: React.FC = () => {
         <div className="flex items-center gap-4">
           {saveStatus === 'saving' && <div className="flex items-center gap-2 text-xs text-zinc-400"><Loader2 size={12} className="animate-spin"/> Saving...</div>}
           {saveStatus === 'saved' && <div className="flex items-center gap-2 text-xs text-green-400">Saved ✓</div>}
+          <button onClick={() => setIsSettingsOpen(true)} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><Settings size={14} /> Settings</button>
           <button onClick={handleSaveProject} disabled={isSaving} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><Save size={14} /> Save</button>
           <button onClick={handleLoadProjects} className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-all flex items-center gap-2"><FolderOpen size={14} /> Load</button>
           <button onClick={handleSignOut} className="px-3 py-1.5 text-xs font-semibold bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-md transition-all flex items-center gap-2"><LogOut size={14} /> Sign Out</button>
@@ -578,6 +602,23 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        currentApiKey={userGeminiKey}
+        onSaveApiKey={handleSaveApiKey}
+      />
+
+      {/* Toast Notifications */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
     </div>
   );
 };
