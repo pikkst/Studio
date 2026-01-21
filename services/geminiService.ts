@@ -68,25 +68,45 @@ export const geminiService = {
   async generateImage(prompt: string, apiKey?: string) {
     const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
     if (!key) throw new Error('Gemini API key is required');
+    
     const ai = new GoogleGenAI({ apiKey: key });
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: prompt }] },
-      config: {
-        imageConfig: { aspectRatio: "16:9" }
-      }
-    });
+    
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: { parts: [{ text: prompt }] },
+        config: {
+          imageConfig: { aspectRatio: "16:9" }
+        }
+      });
 
-    let imageUrl = '';
-    if (response.candidates?.[0]?.content?.parts) {
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData) {
-          imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-          break;
+      let imageUrl = '';
+      if (response.candidates?.[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData) {
+            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+            break;
+          }
         }
       }
+      
+      if (!imageUrl) {
+        throw new Error('No image data received from API');
+      }
+      
+      return imageUrl;
+    } catch (error: any) {
+      // Better error messages for common issues
+      if (error.message?.includes('quota')) {
+        throw new Error('API quota exceeded. Wait a few minutes or try with a different API key.');
+      } else if (error.message?.includes('rate')) {
+        throw new Error('Rate limit reached. Please wait 60 seconds before generating more images.');
+      } else if (error.message?.includes('SAFETY')) {
+        throw new Error('Image prompt blocked by safety filters. Try a different description.');
+      } else {
+        throw new Error(`Image generation failed: ${error.message || 'Unknown error'}`);
+      }
     }
-    return imageUrl;
   },
 
   /**

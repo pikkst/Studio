@@ -948,11 +948,22 @@ const App: React.FC = () => {
         const response = await geminiService.askAssistant(prompt, `Project: ${project.title}, Assets: ${project.assets.length}`, userGeminiKey);
         setMessages(prev => [...prev, { role: 'ai', text: response || "" }]);
       } else if (aiMode === AIServiceMode.IMAGE_GEN) {
-        setMessages(prev => [...prev, { role: 'ai', text: "Generating image..." }]);
-        const url = await geminiService.generateImage(prompt, userGeminiKey);
-        const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
-        setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
-        setMessages(prev => [...prev, { role: 'ai', text: "Image generated! Added to your library." }]);
+        setMessages(prev => [...prev, { role: 'ai', text: "🎨 Generating image..." }]);
+        try {
+          const url = await geminiService.generateImage(prompt, userGeminiKey);
+          const asset: Asset = { id: Math.random().toString(36).substr(2, 9), name: 'AI Generated Image', type: 'image', url, thumbnail: url, duration: 5 };
+          setProject(prev => ({ ...prev, assets: [asset, ...prev.assets] }));
+          setMessages(prev => [...prev, { role: 'ai', text: "✅ Image generated! Added to your library." }]);
+        } catch (imgError: any) {
+          // Show detailed error for image generation
+          setMessages(prev => [...prev, { role: 'ai', text: `❌ ${imgError.message}` }]);
+          
+          // If rate limit, show countdown
+          if (imgError.message?.includes('rate') || imgError.message?.includes('quota')) {
+            setToast({ message: '⏳ Rate limit - wait 60s before next image', type: 'warning' });
+          }
+          throw imgError; // Re-throw to trigger outer catch
+        }
       } else if (aiMode === AIServiceMode.SPEECH_GEN) {
         setMessages(prev => [...prev, { role: 'ai', text: "Generating speech..." }]);
         const url = await geminiService.generateNarration(prompt, userGeminiKey);
