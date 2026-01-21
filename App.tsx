@@ -454,18 +454,28 @@ const App: React.FC = () => {
       }
     }
     
-    // Create new audio elements
+    // Create new audio elements with full pre-buffering
     audioItems.forEach(item => {
       if (!audioElementsRef.current.has(item.id)) {
         const asset = project.assets.find(a => a.id === item.assetId);
         if (asset) {
           const audio = new Audio(asset.url);
-          audio.preload = "metadata";
+          audio.preload = "auto"; // Full pre-buffering
           audio.volume = 0;
+          
+          // Wait for full load before allowing playback
+          audio.onloadeddata = () => {
+            console.log('Audio fully buffered:', asset.name);
+          };
+          
           audio.onwaiting = () => setIsBuffering(true);
-          audio.oncanplay = () => setIsBuffering(false);
+          audio.oncanplaythrough = () => setIsBuffering(false);
           audio.onerror = (e) => console.error('Audio load error:', e);
+          
           audioElementsRef.current.set(item.id, audio);
+          
+          // Force immediate load
+          audio.load();
         }
       }
     });
@@ -486,17 +496,40 @@ const App: React.FC = () => {
         if (!item || !parentTrack) return;
         
         const isInside = currentTime >= item.startTime && currentTime < (item.startTime + item.duration);
-        const targetVolume = isInside ? (parentTrack.volume * (item.volume !== undefined ? item.volume : 1)) : 0;
+        const itemTime = currentTime - item.startTime;
         
-        // Smooth volume transitions to prevent clicks
+        // Calculate target volume with fade-in/fade-out
+        let targetVolume = 0;
+        if (isInside) {
+          const fadeDuration = 0.05; // 50ms fade to prevent clicks
+          const baseVolume = parentTrack.volume * (item.volume !== undefined ? item.volume : 1);
+          
+          // Fade in at start
+          if (itemTime < fadeDuration) {
+            targetVolume = baseVolume * (itemTime / fadeDuration);
+          }
+          // Fade out at end
+          else if (itemTime > item.duration - fadeDuration) {
+            const fadeProgress = (item.duration - itemTime) / fadeDuration;
+            targetVolume = baseVolume * fadeProgress;
+          }
+          // Full volume in middle
+          else {
+            targetVolume = baseVolume;
+          }
+        }
+        
+        // Smooth volume transitions
         if (Math.abs(audio.volume - targetVolume) > 0.01) {
           audio.volume = audio.volume + (targetVolume - audio.volume) * 0.3;
+        } else {
+          audio.volume = targetVolume;
         }
         
         if (isPlaying && isInside) {
           const targetTime = currentTime - item.startTime;
           
-          // Only adjust time if significantly out of sync (increased tolerance)
+          // Only adjust time if significantly out of sync
           if (Math.abs(audio.currentTime - targetTime) > 0.5) {
             audio.currentTime = targetTime;
           }
